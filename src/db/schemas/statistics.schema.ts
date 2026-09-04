@@ -29,5 +29,6 @@ export const userStatsTable = pgTable('user_stats', {
   repetitionsTarget: integer('repetitions_target').notNull().default(100),
   currentStreak: integer('current_streak').notNull().default(0),
   longestStreak: integer('longest_streak').notNull().default(0),
+  totalScore: integer('total_score').notNull().default(0),
   lastPracticedAt: timestamp('last_practiced_at', { mode: 'string' }),
 });

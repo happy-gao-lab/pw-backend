@@ -224,7 +224,7 @@ Request body:
 }
 ```
 
-Progress for this word (and the user's overall stats) are created lazily on the first attempt. A correct attempt increments `correctCount`; an incorrect one increments `incorrectCount` — `percentage` is only ever driven by `correctCount`.
+Progress for this word (and the user's overall stats) are created lazily on the first attempt. A correct attempt increments `correctCount` (and the user's `totalScore` — see [Leaderboard API](#leaderboard-api)); an incorrect one decrements `correctCount` (never below `0`) and increments `incorrectCount`. `percentage` is driven only by `correctCount`.
 
 The user's streak (`currentStreak`) is updated based on the gap since the last attempt (any word): same day → unchanged, exactly one day → `+1`, more than one day → reset to `1`. `longestStreak` tracks the best `currentStreak` ever reached.
 
@@ -259,6 +259,72 @@ Response (`200`):
 ```
 
 `words` is sorted by `percentage` ascending (worst-known words first).
+
+## Leaderboard API
+
+### Get the leaderboard — `GET /leaderboard`
+
+Requires an `Authorization: Bearer <accessToken>` header. Returns every user ranked by `totalScore` (descending) — one point per correct practice attempt, across all words and all time.
+
+Response (`200`):
+
+```json
+[
+  { "rank": 1, "name": "Top User", "totalScore": 50 },
+  { "rank": 2, "name": "Mid User", "totalScore": 20 }
+]
+```
+
+## Practice API
+
+All endpoints require an `Authorization: Bearer <accessToken>` header. The correct answer is never sent to the frontend ahead of time — every submission is verified server-side.
+
+### Start a practice session — `GET /practice/session`
+
+Query param `filter` (optional): `not_learned`, `poor`, `average`, `learned` (same buckets as [Dictionary API](#dictionary-api)), or `random` (no filter, still random). Without `filter`, behaves the same as `random`.
+
+Returns 10 random words from the user's dictionary (with all their definitions and translations), matching the filter if given. Distractors for all four exercise types should be built from this same batch of 10 words — not the wider dictionary or global database.
+
+Response (`200`):
+
+```json
+[
+  {
+    "wordId": 1,
+    "word": "bank",
+    "definitions": ["a financial institution that holds money", "the land alongside a river"],
+    "translations": ["банк", "берег"]
+  }
+]
+```
+
+### Submit an answer — `POST /practice/verify`
+
+Request body shape depends on the exercise `type`:
+
+```json
+// choose_translation — pick the right translation out of 4 options
+{ "wordId": 1, "type": "choose_translation", "answer": "банк" }
+
+// match_definition — pair a word with one of its definitions
+{ "wordId": 1, "type": "match_definition", "answer": 5 }
+
+// type_word — type the English word from its definitions/translations
+{ "wordId": 1, "type": "type_word", "answer": "bank" }
+
+// select_all_translations — pick every correct translation from a shuffled pool
+{ "wordId": 1, "type": "select_all_translations", "answer": ["банк", "берег"] }
+```
+
+`answer` for `match_definition` is a `definitionId` (number); for `select_all_translations` it's the full set of chosen translation strings and must match the word's real translations exactly (nothing missing, nothing extra) to count as correct.
+
+Every submission is recorded via the same logic as `POST /statistics/attempts` (`correctCount`/`totalScore` updates, streak, etc.) — the caller doesn't need to call that endpoint separately.
+
+Response (`201`):
+
+```json
+{ "isCorrect": true }
+```
 
 ## Deployment
 
