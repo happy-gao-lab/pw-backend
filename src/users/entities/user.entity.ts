@@ -1,5 +1,3 @@
-export class User {
-  id: number;
-  name: string;
-  email: string;
-}
+import { usersTable } from '../../db/schemas/users.schema.js';
+
+export type User = typeof usersTable.$inferSelect;
