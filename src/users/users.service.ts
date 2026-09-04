@@ -1,42 +1,43 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { eq } from 'drizzle-orm';
+import DB from '../db/index.js';
+import { usersTable } from '../db/schemas/users.schema.js';
 import { User } from './entities/user.entity.js';
 import { CreateUserDto } from './dto/create-user.dto.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
 
 @Injectable()
 export class UsersService {
-  private users: User[] = [];
-  private nextId = 1;
-
-  findAll(): User[] {
-    return this.users;
+  findAll(): Promise<User[]> {
+    return DB.select().from(usersTable);
   }
 
-  findOne(id: number): User {
-    const user = this.users.find((u) => u.id === id);
+  async findOne(id: number): Promise<User> {
+    const [user] = await DB.select()
+      .from(usersTable)
+      .where(eq(usersTable.id, id));
     if (!user) {
       throw new NotFoundException(`User with id ${id} not found`);
     }
     return user;
   }
 
-  create(dto: CreateUserDto): User {
-    const user: User = { id: this.nextId++, ...dto };
-    this.users.push(user);
+  async create(dto: CreateUserDto): Promise<User> {
+    const [user] = await DB.insert(usersTable).values(dto).returning();
     return user;
   }
 
-  update(id: number, dto: UpdateUserDto): User {
-    const user = this.findOne(id);
-    Object.assign(user, dto);
+  async update(id: number, dto: UpdateUserDto): Promise<User> {
+    await this.findOne(id);
+    const [user] = await DB.update(usersTable)
+      .set(dto)
+      .where(eq(usersTable.id, id))
+      .returning();
     return user;
   }
 
-  remove(id: number): void {
-    const index = this.users.findIndex((u) => u.id === id);
-    if (index === -1) {
-      throw new NotFoundException(`User with id ${id} not found`);
-    }
-    this.users.splice(index, 1);
+  async remove(id: number): Promise<void> {
+    await this.findOne(id);
+    await DB.delete(usersTable).where(eq(usersTable.id, id));
   }
 }
