@@ -57,6 +57,69 @@ $ yarn run test:e2e
 $ yarn run test:cov
 ```
 
+## Auth API
+
+Base URL: `http://localhost:3000` (or `PORT` from `.env`).
+
+### Sign up — `POST /auth/signup`
+
+Request body:
+
+```json
+{
+  "name": "Test User",
+  "email": "test@example.com",
+  "password": "supersecret123"
+}
+```
+
+Success response (`201`):
+
+```json
+{
+  "id": 1,
+  "name": "Test User",
+  "email": "test@example.com"
+}
+```
+
+`passwordHash` is never returned. If the email is already registered, the response is `409 Conflict`:
+
+```json
+{
+  "statusCode": 409,
+  "message": "Email is already in use"
+}
+```
+
+### Sign in — `POST /auth/signin`
+
+Request body:
+
+```json
+{
+  "email": "test@example.com",
+  "password": "supersecret123"
+}
+```
+
+Success response (`200`):
+
+```json
+{
+  "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+```
+
+If the email or password is invalid, the response is `401 Unauthorized` (same message for both cases, to avoid revealing which field was wrong):
+
+```json
+{
+  "statusCode": 401,
+  "message": "Invalid email or password"
+}
+```
+
 ## Deployment
 
 When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
