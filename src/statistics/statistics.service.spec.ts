@@ -15,7 +15,7 @@ vi.mock('../db/index.js', () => ({
   },
 }));
 
-const CHAIN_METHODS = ['from', 'where', 'values', 'set', 'returning'] as const;
+const CHAIN_METHODS = ['from', 'where', 'values', 'set', 'returning', 'leftJoin', 'orderBy'] as const;
 
 function chain(result: unknown) {
   const builder: Record<string, ReturnType<typeof vi.fn>> = {} as never;
@@ -62,6 +62,7 @@ describe('StatisticsService', () => {
               repetitionsTarget: 100,
               currentStreak: 0,
               longestStreak: 0,
+              totalScore: 0,
               lastPracticedAt: null,
             },
           ]),
@@ -84,11 +85,12 @@ describe('StatisticsService', () => {
       expect(statsUpdateBuilder.set).toHaveBeenCalledWith({
         currentStreak: 1,
         longestStreak: 1,
+        totalScore: 1,
         lastPracticedAt: NOW,
       });
     });
 
-    it('records an incorrect attempt without touching correctCount', async () => {
+    it('decrements correctCount on an incorrect attempt and leaves totalScore unchanged', async () => {
       mockSelect
         .mockReturnValueOnce(
           chain([{ id: 1, userId: 1, wordId: 5, correctCount: 3, incorrectCount: 2 }]),
@@ -100,27 +102,92 @@ describe('StatisticsService', () => {
               repetitionsTarget: 100,
               currentStreak: 2,
               longestStreak: 4,
+              totalScore: 10,
               lastPracticedAt: NOW,
             },
           ]),
         );
 
       mockUpdate
-        .mockReturnValueOnce(chain([{ correctCount: 3, incorrectCount: 3 }]))
+        .mockReturnValueOnce(chain([{ correctCount: 2, incorrectCount: 3 }]))
         .mockReturnValueOnce(chain(undefined));
 
       const result = await service.recordAttempt(1, { wordId: 5, isCorrect: false });
 
       const progressUpdateBuilder = mockUpdate.mock.results[0].value;
       expect(progressUpdateBuilder.set).toHaveBeenCalledWith(
-        expect.objectContaining({ correctCount: 3, incorrectCount: 3 }),
+        expect.objectContaining({ correctCount: 2, incorrectCount: 3 }),
       );
+
+      const statsUpdateBuilder = mockUpdate.mock.results[1].value;
+      expect(statsUpdateBuilder.set).toHaveBeenCalledWith(
+        expect.objectContaining({ totalScore: 10 }),
+      );
+
       expect(result).toEqual({
         wordId: 5,
-        correctCount: 3,
+        correctCount: 2,
         incorrectCount: 3,
-        percentage: 3,
+        percentage: 2,
       });
+    });
+
+    it('does not decrement correctCount below zero', async () => {
+      mockSelect
+        .mockReturnValueOnce(
+          chain([{ id: 1, userId: 1, wordId: 5, correctCount: 0, incorrectCount: 4 }]),
+        )
+        .mockReturnValueOnce(
+          chain([
+            {
+              userId: 1,
+              repetitionsTarget: 100,
+              currentStreak: 1,
+              longestStreak: 1,
+              totalScore: 0,
+              lastPracticedAt: NOW,
+            },
+          ]),
+        );
+
+      mockUpdate
+        .mockReturnValueOnce(chain([{ correctCount: 0, incorrectCount: 5 }]))
+        .mockReturnValueOnce(chain(undefined));
+
+      await service.recordAttempt(1, { wordId: 5, isCorrect: false });
+
+      const progressUpdateBuilder = mockUpdate.mock.results[0].value;
+      expect(progressUpdateBuilder.set).toHaveBeenCalledWith(
+        expect.objectContaining({ correctCount: 0, incorrectCount: 5 }),
+      );
+    });
+
+    it('increments totalScore on a correct attempt', async () => {
+      mockSelect
+        .mockReturnValueOnce(chain([{ id: 1, correctCount: 3, incorrectCount: 0 }]))
+        .mockReturnValueOnce(
+          chain([
+            {
+              userId: 1,
+              repetitionsTarget: 100,
+              currentStreak: 1,
+              longestStreak: 1,
+              totalScore: 10,
+              lastPracticedAt: NOW,
+            },
+          ]),
+        );
+
+      mockUpdate
+        .mockReturnValueOnce(chain([{ correctCount: 4, incorrectCount: 0 }]))
+        .mockReturnValueOnce(chain(undefined));
+
+      await service.recordAttempt(1, { wordId: 5, isCorrect: true });
+
+      const statsUpdateBuilder = mockUpdate.mock.results[1].value;
+      expect(statsUpdateBuilder.set).toHaveBeenCalledWith(
+        expect.objectContaining({ totalScore: 11 }),
+      );
     });
 
     it('leaves the streak unchanged when already practiced today', async () => {
@@ -128,7 +195,14 @@ describe('StatisticsService', () => {
         .mockReturnValueOnce(chain([{ id: 1, correctCount: 1, incorrectCount: 0 }]))
         .mockReturnValueOnce(
           chain([
-            { userId: 1, repetitionsTarget: 100, currentStreak: 3, longestStreak: 5, lastPracticedAt: NOW },
+            {
+              userId: 1,
+              repetitionsTarget: 100,
+              currentStreak: 3,
+              longestStreak: 5,
+              totalScore: 0,
+              lastPracticedAt: NOW,
+            },
           ]),
         );
 
@@ -139,11 +213,9 @@ describe('StatisticsService', () => {
       await service.recordAttempt(1, { wordId: 5, isCorrect: true });
 
       const statsUpdateBuilder = mockUpdate.mock.results[1].value;
-      expect(statsUpdateBuilder.set).toHaveBeenCalledWith({
-        currentStreak: 3,
-        longestStreak: 5,
-        lastPracticedAt: NOW,
-      });
+      expect(statsUpdateBuilder.set).toHaveBeenCalledWith(
+        expect.objectContaining({ currentStreak: 3, longestStreak: 5 }),
+      );
     });
 
     it('increments the streak when the last practice was yesterday', async () => {
@@ -157,6 +229,7 @@ describe('StatisticsService', () => {
               repetitionsTarget: 100,
               currentStreak: 3,
               longestStreak: 3,
+              totalScore: 0,
               lastPracticedAt: yesterday,
             },
           ]),
@@ -169,11 +242,9 @@ describe('StatisticsService', () => {
       await service.recordAttempt(1, { wordId: 5, isCorrect: true });
 
       const statsUpdateBuilder = mockUpdate.mock.results[1].value;
-      expect(statsUpdateBuilder.set).toHaveBeenCalledWith({
-        currentStreak: 4,
-        longestStreak: 4,
-        lastPracticedAt: NOW,
-      });
+      expect(statsUpdateBuilder.set).toHaveBeenCalledWith(
+        expect.objectContaining({ currentStreak: 4, longestStreak: 4 }),
+      );
     });
 
     it('resets the streak to 1 when there was a gap of more than one day', async () => {
@@ -187,6 +258,7 @@ describe('StatisticsService', () => {
               repetitionsTarget: 100,
               currentStreak: 7,
               longestStreak: 7,
+              totalScore: 0,
               lastPracticedAt: fiveDaysAgo,
             },
           ]),
@@ -199,11 +271,9 @@ describe('StatisticsService', () => {
       await service.recordAttempt(1, { wordId: 5, isCorrect: true });
 
       const statsUpdateBuilder = mockUpdate.mock.results[1].value;
-      expect(statsUpdateBuilder.set).toHaveBeenCalledWith({
-        currentStreak: 1,
-        longestStreak: 7,
-        lastPracticedAt: NOW,
-      });
+      expect(statsUpdateBuilder.set).toHaveBeenCalledWith(
+        expect.objectContaining({ currentStreak: 1, longestStreak: 7 }),
+      );
     });
   });
 
@@ -217,6 +287,7 @@ describe('StatisticsService', () => {
               repetitionsTarget: 100,
               currentStreak: 2,
               longestStreak: 5,
+              totalScore: 0,
               lastPracticedAt: NOW,
             },
           ]),
@@ -254,6 +325,7 @@ describe('StatisticsService', () => {
             repetitionsTarget: 100,
             currentStreak: 0,
             longestStreak: 0,
+            totalScore: 0,
             lastPracticedAt: null,
           },
         ]),
@@ -268,6 +340,34 @@ describe('StatisticsService', () => {
         lastPracticedAt: null,
         words: [],
       });
+    });
+  });
+
+  describe('getLeaderboard', () => {
+    it('returns users ranked by totalScore descending', async () => {
+      mockSelect.mockReturnValueOnce(
+        chain([
+          { name: 'Top User', totalScore: 50 },
+          { name: 'Mid User', totalScore: 20 },
+          { name: 'New User', totalScore: 0 },
+        ]),
+      );
+
+      const result = await service.getLeaderboard();
+
+      expect(result).toEqual([
+        { rank: 1, name: 'Top User', totalScore: 50 },
+        { rank: 2, name: 'Mid User', totalScore: 20 },
+        { rank: 3, name: 'New User', totalScore: 0 },
+      ]);
+    });
+
+    it('returns an empty list when there are no user stats yet', async () => {
+      mockSelect.mockReturnValueOnce(chain([]));
+
+      const result = await service.getLeaderboard();
+
+      expect(result).toEqual([]);
     });
   });
 });
