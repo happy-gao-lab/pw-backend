@@ -120,6 +120,88 @@ If the email or password is invalid, the response is `401 Unauthorized` (same me
 }
 ```
 
+## Dictionary API
+
+All endpoints require an `Authorization: Bearer <accessToken>` header (the token from `POST /auth/signin`).
+
+### Look up word suggestions — `GET /words?value=apple`
+
+Searches the global word database (independent of any user's dictionary) so the frontend can suggest existing definitions/translations while the user types.
+
+Response when the word exists (`200`):
+
+```json
+{
+  "wordId": 1,
+  "word": "apple",
+  "definitions": ["a round fruit with red or green skin"],
+  "translations": ["яблуко"]
+}
+```
+
+Response when the word does not exist yet: `null`.
+
+### Add a word to my dictionary — `POST /dictionary`
+
+Request body:
+
+```json
+{
+  "value": "apple",
+  "definitions": ["a round fruit with red or green skin"],
+  "translations": ["яблуко"]
+}
+```
+
+At least one definition and one translation are required, otherwise `400 Bad Request`. If the word already exists globally, it's reused; new definitions/translations are added to it.
+
+Response (`201`):
+
+```json
+{
+  "wordId": 1
+}
+```
+
+### Get my dictionary — `GET /dictionary`
+
+Query params (all optional): `page`, `pageSize`, `search`, `ids` (comma-separated word ids).
+
+Response (`200`):
+
+```json
+{
+  "data": [
+    {
+      "wordId": 1,
+      "word": "apple",
+      "definitions": ["a round fruit with red or green skin"],
+      "translations": ["яблуко"]
+    }
+  ],
+  "total": 1,
+  "pages": 1,
+  "page": 1
+}
+```
+
+### Edit a word in my dictionary — `PATCH /dictionary/:wordId`
+
+Request body:
+
+```json
+{
+  "definitions": ["a round fruit with red or green skin"],
+  "translations": ["яблуко", "плід яблуні"]
+}
+```
+
+Replaces the full set of definitions/translations linked to this word in the user's dictionary — pairs no longer present are removed, new ones are added. At least one of each is required. Returns `404 Not Found` if the word isn't in the user's dictionary.
+
+### Remove a word from my dictionary — `DELETE /dictionary/:wordId`
+
+Removes the word from the user's dictionary entirely. Returns `404 Not Found` if it wasn't there. The global word/definitions/translations records are kept (other users may still have them in their dictionaries).
+
 ## Deployment
 
 When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
