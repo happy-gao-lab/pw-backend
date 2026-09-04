@@ -4,6 +4,7 @@ import { UsersModule } from './users/users.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { DictionaryModule } from './dictionary/dictionary.module.js';
 import { StatisticsModule } from './statistics/statistics.module.js';
+import { PracticeModule } from './practice/practice.module.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
 
@@ -20,6 +21,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     UsersModule,
     DictionaryModule,
     StatisticsModule,
+    PracticeModule,
   ],
 })
 export class AppModule {}

@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import DB from '../db/index.js';
 import { userStatsTable, wordProgressTable } from '../db/schemas/statistics.schema.js';
+import { usersTable } from '../db/schemas/users.schema.js';
 import { RecordAttemptDto } from './dto.js';
 
 @Injectable()
@@ -53,7 +54,9 @@ export class StatisticsService {
 
     const [updatedProgress] = await DB.update(wordProgressTable)
       .set({
-        correctCount: progress.correctCount + (dto.isCorrect ? 1 : 0),
+        correctCount: dto.isCorrect
+          ? progress.correctCount + 1
+          : Math.max(0, progress.correctCount - 1),
         incorrectCount: progress.incorrectCount + (dto.isCorrect ? 0 : 1),
         lastPracticedAt: now,
         updatedAt: now,
@@ -79,9 +82,10 @@ export class StatisticsService {
     }
 
     const longestStreak = Math.max(stats.longestStreak, currentStreak);
+    const totalScore = stats.totalScore + (dto.isCorrect ? 1 : 0);
 
     await DB.update(userStatsTable)
-      .set({ currentStreak, longestStreak, lastPracticedAt: now })
+      .set({ currentStreak, longestStreak, totalScore, lastPracticedAt: now })
       .where(eq(userStatsTable.userId, userId));
 
     return {
@@ -93,6 +97,22 @@ export class StatisticsService {
         stats.repetitionsTarget,
       ),
     };
+  }
+
+  async getLeaderboard() {
+    const rows = await DB.select({
+      name: usersTable.name,
+      totalScore: userStatsTable.totalScore,
+    })
+      .from(userStatsTable)
+      .leftJoin(usersTable, eq(userStatsTable.userId, usersTable.id))
+      .orderBy(desc(userStatsTable.totalScore));
+
+    return rows.map((row, index) => ({
+      rank: index + 1,
+      name: row.name,
+      totalScore: row.totalScore,
+    }));
   }
 
   async getStats(userId: number) {
