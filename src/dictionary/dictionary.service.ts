@@ -16,15 +16,31 @@ type Pair = { definitionId: number; translationId: number };
 @Injectable()
 export class DictionaryService {
   private async findOrCreateWord(value: string): Promise<number> {
+    const normalizedValue = value.trim().toLowerCase();
+
     const [existing] = await DB.select()
       .from(wordsTable)
-      .where(eq(wordsTable.value, value));
+      .where(eq(wordsTable.value, normalizedValue));
     if (existing) {
       return existing.id;
     }
 
-    const [created] = await DB.insert(wordsTable).values({ value }).returning();
-    return created.id;
+    try {
+      const [created] = await DB.insert(wordsTable)
+        .values({ value: normalizedValue })
+        .returning();
+      return created.id;
+    } catch (error) {
+      // Another request may have created the same word concurrently between
+      // the select above and this insert (unique constraint on value).
+      const [createdConcurrently] = await DB.select()
+        .from(wordsTable)
+        .where(eq(wordsTable.value, normalizedValue));
+      if (createdConcurrently) {
+        return createdConcurrently.id;
+      }
+      throw error;
+    }
   }
 
   private async upsertDefinitions(
@@ -59,6 +75,13 @@ export class DictionaryService {
       return [];
     }
 
+    const tooLong = values.find((value) => value.length > 255);
+    if (tooLong) {
+      throw new BadRequestException(
+        `Translation is too long (max 255 characters): "${tooLong}"`,
+      );
+    }
+
     await DB.insert(translationsTable)
       .values(values.map((value) => ({ wordId, value })))
       .onConflictDoNothing();
@@ -82,7 +105,10 @@ export class DictionaryService {
   }
 
   async findWordSuggestions(value: string) {
-    const [word] = await DB.select().from(wordsTable).where(eq(wordsTable.value, value));
+    const normalizedValue = value.trim().toLowerCase();
+    const [word] = await DB.select()
+      .from(wordsTable)
+      .where(eq(wordsTable.value, normalizedValue));
 
     if (!word) {
       return null;

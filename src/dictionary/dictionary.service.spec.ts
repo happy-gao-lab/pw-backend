@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { eq } from 'drizzle-orm';
 import { DictionaryService } from './dictionary.service.js';
+import { wordsTable } from '../db/schemas/dictionary.schemas.js';
 
 const { mockSelect, mockInsert, mockDelete } = vi.hoisted(() => ({
   mockSelect: vi.fn(),
@@ -40,11 +42,25 @@ function chain(result: unknown) {
   return builder;
 }
 
+function rejectingChain(error: unknown) {
+  const builder: Record<string, unknown> = {
+    then: (_resolve: unknown, reject?: (reason: unknown) => unknown) =>
+      Promise.reject(error).catch((e) => {
+        if (reject) return reject(e);
+        throw e;
+      }),
+  };
+  for (const method of CHAIN_METHODS) {
+    builder[method] = vi.fn(() => builder);
+  }
+  return builder;
+}
+
 describe('DictionaryService', () => {
   let service: DictionaryService;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     service = new DictionaryService();
   });
 
@@ -89,6 +105,102 @@ describe('DictionaryService', () => {
         { userId: 1, wordId: 1, definitionId: 11, translationId: 20 },
       ]);
     });
+
+    it('reuses an existing word instead of creating a duplicate', async () => {
+      mockSelect
+        .mockReturnValueOnce(chain([{ id: 7, value: 'apple' }])) // findOrCreateWord: word already exists
+        .mockReturnValueOnce(chain([{ id: 10 }])) // upsertDefinitions ids
+        .mockReturnValueOnce(chain([{ id: 20 }])); // upsertTranslations ids
+
+      mockInsert
+        .mockReturnValueOnce(chain(undefined)) // insert definitions
+        .mockReturnValueOnce(chain(undefined)) // insert translations
+        .mockReturnValueOnce(chain(undefined)); // insert dictionary rows
+
+      const result = await service.create(1, {
+        value: 'apple',
+        definitions: ['fruit'],
+        translations: ['яблуко'],
+      });
+
+      expect(result).toEqual({ wordId: 7 });
+      // No "insert into wordsTable" call — only definitions, translations, dictionary.
+      expect(mockInsert).toHaveBeenCalledTimes(3);
+    });
+
+    it('normalizes the word value (trims and lowercases) before looking it up', async () => {
+      mockSelect
+        .mockReturnValueOnce(chain([{ id: 7, value: 'apple' }]))
+        .mockReturnValueOnce(chain([{ id: 10 }]))
+        .mockReturnValueOnce(chain([{ id: 20 }]));
+
+      mockInsert
+        .mockReturnValueOnce(chain(undefined))
+        .mockReturnValueOnce(chain(undefined))
+        .mockReturnValueOnce(chain(undefined));
+
+      await service.create(1, {
+        value: '  APPLE  ',
+        definitions: ['fruit'],
+        translations: ['яблуко'],
+      });
+
+      const wordSelectBuilder = mockSelect.mock.results[0].value as {
+        where: ReturnType<typeof vi.fn>;
+      };
+      expect(wordSelectBuilder.where).toHaveBeenCalledWith(eq(wordsTable.value, 'apple'));
+    });
+
+    it('falls back to the concurrently created word if the insert hits a unique conflict', async () => {
+      mockSelect
+        .mockReturnValueOnce(chain([])) // findOrCreateWord: no existing word yet
+        .mockReturnValueOnce(chain([{ id: 9, value: 'apple' }])) // re-select after conflict
+        .mockReturnValueOnce(chain([{ id: 10 }])) // upsertDefinitions ids
+        .mockReturnValueOnce(chain([{ id: 20 }])); // upsertTranslations ids
+
+      mockInsert
+        .mockReturnValueOnce(rejectingChain(new Error('duplicate key value violates unique constraint')))
+        .mockReturnValueOnce(chain(undefined)) // insert definitions
+        .mockReturnValueOnce(chain(undefined)) // insert translations
+        .mockReturnValueOnce(chain(undefined)); // insert dictionary rows
+
+      const result = await service.create(1, {
+        value: 'apple',
+        definitions: ['fruit'],
+        translations: ['яблуко'],
+      });
+
+      expect(result).toEqual({ wordId: 9 });
+    });
+
+    it('rethrows the insert error when the word still does not exist after a conflict', async () => {
+      const insertError = new Error('some other database error');
+      mockSelect
+        .mockReturnValueOnce(chain([])) // findOrCreateWord: no existing word
+        .mockReturnValueOnce(chain([])); // re-select after failed insert: still nothing
+
+      mockInsert.mockReturnValueOnce(rejectingChain(insertError));
+
+      await expect(
+        service.create(1, { value: 'apple', definitions: ['fruit'], translations: ['яблуко'] }),
+      ).rejects.toThrow(insertError);
+    });
+
+    it('throws BadRequestException when a translation exceeds 255 characters', async () => {
+      mockSelect
+        .mockReturnValueOnce(chain([{ id: 1, value: 'apple' }])) // findOrCreateWord
+        .mockReturnValueOnce(chain([{ id: 10 }])); // upsertDefinitions ids
+      mockInsert.mockReturnValueOnce(chain(undefined)); // upsertDefinitions insert
+
+      const tooLong = 'a'.repeat(256);
+
+      await expect(
+        service.create(1, { value: 'apple', definitions: ['fruit'], translations: [tooLong] }),
+      ).rejects.toThrow(BadRequestException);
+
+      // Only the definitions insert happened — never a translations or dictionary insert.
+      expect(mockInsert).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('findAll', () => {
@@ -121,6 +233,14 @@ describe('DictionaryService', () => {
       expect(mockInsert).not.toHaveBeenCalled();
     });
 
+    it('throws BadRequestException when definitions or translations are empty', async () => {
+      await expect(
+        service.update(1, 5, { definitions: [], translations: ['яблуко'] }),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(mockSelect).not.toHaveBeenCalled();
+    });
+
     it('deletes removed pairs and inserts new pairs', async () => {
       mockSelect
         .mockReturnValueOnce(chain([{ id: 100, definitionId: 10, translationId: 20 }])) // existing rows
@@ -144,6 +264,36 @@ describe('DictionaryService', () => {
       expect(insertPairsBuilder.values).toHaveBeenCalledWith([
         { userId: 1, wordId: 5, definitionId: 10, translationId: 21 },
       ]);
+    });
+
+    it('does nothing when the new pairs are identical to the existing ones', async () => {
+      mockSelect
+        .mockReturnValueOnce(chain([{ id: 100, definitionId: 10, translationId: 20 }])) // existing rows
+        .mockReturnValueOnce(chain([{ id: 10 }])) // upsertDefinitions ids (unchanged)
+        .mockReturnValueOnce(chain([{ id: 20 }])); // upsertTranslations ids (unchanged)
+
+      mockInsert
+        .mockReturnValueOnce(chain(undefined)) // insert definitions (onConflictDoNothing)
+        .mockReturnValueOnce(chain(undefined)); // insert translations (onConflictDoNothing)
+
+      await service.update(1, 5, { definitions: ['fruit'], translations: ['яблуко'] });
+
+      expect(mockDelete).not.toHaveBeenCalled();
+      // Only the two upsert inserts — no dictionary-row insert since nothing is new.
+      expect(mockInsert).toHaveBeenCalledTimes(2);
+    });
+
+    it('throws BadRequestException when a translation exceeds 255 characters', async () => {
+      mockSelect
+        .mockReturnValueOnce(chain([{ id: 100, definitionId: 10, translationId: 20 }])) // existing rows
+        .mockReturnValueOnce(chain([{ id: 10 }])); // upsertDefinitions ids
+      mockInsert.mockReturnValueOnce(chain(undefined)); // upsertDefinitions insert
+
+      const tooLong = 'a'.repeat(256);
+
+      await expect(
+        service.update(1, 5, { definitions: ['fruit'], translations: [tooLong] }),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 
@@ -184,6 +334,27 @@ describe('DictionaryService', () => {
         word: 'apple',
         definitions: ['fruit'],
         translations: ['яблуко'],
+      });
+    });
+
+    it('normalizes the value (trims and lowercases) so casing does not affect lookup', async () => {
+      mockSelect
+        .mockReturnValueOnce(chain([{ id: 1, value: 'bank' }]))
+        .mockReturnValueOnce(
+          chain([{ wordId: 1, word: 'bank', definitions: ['a financial institution'], translations: ['банк'] }]),
+        );
+
+      const result = await service.findWordSuggestions('  Bank  ');
+
+      const wordSelectBuilder = mockSelect.mock.results[0].value as {
+        where: ReturnType<typeof vi.fn>;
+      };
+      expect(wordSelectBuilder.where).toHaveBeenCalledWith(eq(wordsTable.value, 'bank'));
+      expect(result).toEqual({
+        wordId: 1,
+        word: 'bank',
+        definitions: ['a financial institution'],
+        translations: ['банк'],
       });
     });
   });
