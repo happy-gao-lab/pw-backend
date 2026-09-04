@@ -3,6 +3,7 @@ import { createObserveModule } from '@nestjs/observe';
 import { UsersModule } from './users/users.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { DictionaryModule } from './dictionary/dictionary.module.js';
+import { StatisticsModule } from './statistics/statistics.module.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
 
@@ -18,6 +19,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     AuthModule,
     UsersModule,
     DictionaryModule,
+    StatisticsModule,
   ],
 })
 export class AppModule {}

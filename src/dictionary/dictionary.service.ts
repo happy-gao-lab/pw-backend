@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { and, asc, count, eq, ilike, inArray, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, ilike, inArray, sql } from 'drizzle-orm';
 import DB from '../db/index.js';
 import {
   definitionsTable,
@@ -7,7 +7,13 @@ import {
   translationsTable,
   wordsTable,
 } from '../db/schemas/dictionary.schemas.js';
-import { CreateWordDto, FindDictionaryQueryDto, UpdateWordDto } from './dto.js';
+import { userStatsTable, wordProgressTable } from '../db/schemas/statistics.schema.js';
+import {
+  CreateWordDto,
+  DictionaryFilter,
+  FindDictionaryQueryDto,
+  UpdateWordDto,
+} from './dto.js';
 
 const DEFAULT_ITEMS_PER_PAGE = 20;
 
@@ -104,6 +110,27 @@ export class DictionaryService {
     );
   }
 
+  private percentageExpr() {
+    return sql<number>`least(100, round(coalesce(max(${wordProgressTable.correctCount}), 0)::numeric / coalesce(max(${userStatsTable.repetitionsTarget}), 100) * 100))`;
+  }
+
+  private filterHavingCondition(filter: DictionaryFilter) {
+    switch (filter) {
+      case 'not_learned':
+        return sql`${this.percentageExpr()} = 0`;
+      case 'poor':
+        return sql`${this.percentageExpr()} between 1 and 39`;
+      case 'average':
+        return sql`${this.percentageExpr()} between 40 and 99`;
+      case 'learned':
+        return sql`${this.percentageExpr()} = 100`;
+      default:
+        throw new BadRequestException(
+          `Invalid filter. Allowed values: not_learned, poor, average, learned`,
+        );
+    }
+  }
+
   async findWordSuggestions(value: string) {
     const normalizedValue = value.trim().toLowerCase();
     const [word] = await DB.select()
@@ -152,10 +179,7 @@ export class DictionaryService {
     return { wordId };
   }
 
-  async findAll(userId: number, query: FindDictionaryQueryDto) {
-    const page = query.page ?? 1;
-    const pageSize = query.pageSize ?? DEFAULT_ITEMS_PER_PAGE;
-
+  private buildDictionaryQuery(userId: number, query: FindDictionaryQueryDto) {
     const baseWhere = [eq(dictionaryTable.userId, userId)];
     if (query.search) {
       baseWhere.push(ilike(wordsTable.value, `%${query.search.trim()}%`));
@@ -164,7 +188,7 @@ export class DictionaryService {
       baseWhere.push(inArray(dictionaryTable.wordId, query.ids));
     }
 
-    const data = await DB.select({
+    const builder = DB.select({
       wordId: dictionaryTable.wordId,
       word: wordsTable.value,
       definitions: sql<string[]>`json_agg(distinct ${definitionsTable.value})`.as(
@@ -173,6 +197,7 @@ export class DictionaryService {
       translations: sql<string[]>`json_agg(distinct ${translationsTable.value})`.as(
         'translations',
       ),
+      percentage: this.percentageExpr().as('percentage'),
     })
       .from(dictionaryTable)
       .where(and(...baseWhere))
@@ -191,16 +216,41 @@ export class DictionaryService {
           eq(dictionaryTable.translationId, translationsTable.id),
         ),
       )
+      .leftJoin(
+        wordProgressTable,
+        and(
+          eq(dictionaryTable.userId, wordProgressTable.userId),
+          eq(dictionaryTable.wordId, wordProgressTable.wordId),
+        ),
+      )
+      .leftJoin(userStatsTable, eq(dictionaryTable.userId, userStatsTable.userId))
       .groupBy(dictionaryTable.wordId, wordsTable.value)
-      .orderBy(asc(wordsTable.value))
+      .$dynamic();
+
+    return query.filter
+      ? builder.having(this.filterHavingCondition(query.filter))
+      : builder;
+  }
+
+  async findAll(userId: number, query: FindDictionaryQueryDto) {
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? DEFAULT_ITEMS_PER_PAGE;
+
+    const orderByExpr =
+      query.sort === 'percentage_asc'
+        ? asc(this.percentageExpr())
+        : query.sort === 'percentage_desc'
+          ? desc(this.percentageExpr())
+          : asc(wordsTable.value);
+
+    const data = await this.buildDictionaryQuery(userId, query)
+      .orderBy(orderByExpr)
       .limit(pageSize)
       .offset((page - 1) * pageSize);
 
-    const [countRow] = await DB.select({
-      total: count(sql`distinct ${dictionaryTable.wordId}`),
-    })
-      .from(dictionaryTable)
-      .where(eq(dictionaryTable.userId, userId));
+    const [countRow] = await DB.select({ total: count() }).from(
+      this.buildDictionaryQuery(userId, query).as('filtered_dictionary'),
+    );
 
     const total = countRow?.total ?? 0;
     const pages = Math.ceil(total / pageSize);
