@@ -23,23 +23,26 @@ const CHAIN_METHODS = [
   'where',
   'leftJoin',
   'groupBy',
+  'having',
+  '$dynamic',
   'orderBy',
   'limit',
   'offset',
+  'as',
   'values',
   'onConflictDoNothing',
   'returning',
 ] as const;
 
 function chain(result: unknown) {
-  const builder: Record<string, unknown> = {
+  const builder: Record<string, ReturnType<typeof vi.fn> | unknown> = {
     then: (resolve: (value: unknown) => unknown, reject?: (reason: unknown) => unknown) =>
       Promise.resolve(result).then(resolve, reject),
   };
   for (const method of CHAIN_METHODS) {
     builder[method] = vi.fn(() => builder);
   }
-  return builder;
+  return builder as Record<string, ReturnType<typeof vi.fn>> & { then: unknown };
 }
 
 function rejectingChain(error: unknown) {
@@ -204,21 +207,87 @@ describe('DictionaryService', () => {
   });
 
   describe('findAll', () => {
-    it('returns grouped data with pagination', async () => {
+    it('returns grouped data (with percentage) and pagination, without filtering', async () => {
+      const dataChain = chain([
+        {
+          wordId: 1,
+          word: 'apple',
+          definitions: ['fruit'],
+          translations: ['яблуко'],
+          percentage: 40,
+        },
+      ]);
+      const countOuterChain = chain([{ total: 1 }]);
+      const countSubqueryChain = chain(undefined);
+
       mockSelect
-        .mockReturnValueOnce(
-          chain([{ wordId: 1, word: 'apple', definitions: ['fruit'], translations: ['яблуко'] }]),
-        )
-        .mockReturnValueOnce(chain([{ total: 1 }]));
+        .mockReturnValueOnce(dataChain) // data query builder
+        .mockReturnValueOnce(countOuterChain) // outer "select total from (...)" builder
+        .mockReturnValueOnce(countSubqueryChain); // inner subquery builder
 
       const result = await service.findAll(1, {});
 
       expect(result).toEqual({
-        data: [{ wordId: 1, word: 'apple', definitions: ['fruit'], translations: ['яблуко'] }],
+        data: [
+          {
+            wordId: 1,
+            word: 'apple',
+            definitions: ['fruit'],
+            translations: ['яблуко'],
+            percentage: 40,
+          },
+        ],
         total: 1,
         pages: 1,
         page: 1,
       });
+
+      // No filter given — .having() must not be called on either builder.
+      expect(dataChain.having).not.toHaveBeenCalled();
+      expect(countSubqueryChain.having).not.toHaveBeenCalled();
+      // Default sort — orderBy is still invoked (by word, not percentage).
+      expect(dataChain.orderBy).toHaveBeenCalledTimes(1);
+    });
+
+    it('applies .having() when a filter is given', async () => {
+      const dataChain = chain([]);
+      const countOuterChain = chain([{ total: 0 }]);
+      const countSubqueryChain = chain(undefined);
+
+      mockSelect
+        .mockReturnValueOnce(dataChain)
+        .mockReturnValueOnce(countOuterChain)
+        .mockReturnValueOnce(countSubqueryChain);
+
+      await service.findAll(1, { filter: 'learned' });
+
+      expect(dataChain.having).toHaveBeenCalledTimes(1);
+      expect(countSubqueryChain.having).toHaveBeenCalledTimes(1);
+    });
+
+    it('throws BadRequestException for an invalid filter value', async () => {
+      // The query builder itself is constructed before the filter is validated,
+      // so a valid (never-awaited) chain still needs to be returned here.
+      mockSelect.mockReturnValueOnce(chain(undefined));
+
+      await expect(
+        service.findAll(1, { filter: 'invalid' as never }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('sorts by percentage when sort is given', async () => {
+      const dataChain = chain([]);
+      const countOuterChain = chain([{ total: 0 }]);
+      const countSubqueryChain = chain(undefined);
+
+      mockSelect
+        .mockReturnValueOnce(dataChain)
+        .mockReturnValueOnce(countOuterChain)
+        .mockReturnValueOnce(countSubqueryChain);
+
+      await service.findAll(1, { sort: 'percentage_desc' });
+
+      expect(dataChain.orderBy).toHaveBeenCalledTimes(1);
     });
   });
 

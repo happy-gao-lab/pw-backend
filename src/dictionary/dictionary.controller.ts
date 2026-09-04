@@ -15,6 +15,7 @@ import { AuthGuard } from '../auth/auth.guard.js';
 import type { AuthenticatedRequest } from '../auth/auth.guard.js';
 import { DictionaryService } from './dictionary.service.js';
 import { CreateWordDto, UpdateWordDto } from './dto.js';
+import type { DictionaryFilter, DictionarySort } from './dto.js';
 
 @UseGuards(AuthGuard)
 @Controller('dictionary')
@@ -33,12 +34,16 @@ export class DictionaryController {
     @Query('pageSize') pageSize?: string,
     @Query('search') search?: string,
     @Query('ids') ids?: string,
+    @Query('sort') sort?: DictionarySort,
+    @Query('filter') filter?: DictionaryFilter,
   ) {
     return this.dictionaryService.findAll(req.user.id, {
       page: page ? Number(page) : undefined,
       pageSize: pageSize ? Number(pageSize) : undefined,
       search,
       ids: ids ? ids.split(',').map(Number) : undefined,
+      sort,
+      filter,
     });
   }
 

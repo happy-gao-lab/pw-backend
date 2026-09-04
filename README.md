@@ -165,7 +165,11 @@ Response (`201`):
 
 ### Get my dictionary — `GET /dictionary`
 
-Query params (all optional): `page`, `pageSize`, `search`, `ids` (comma-separated word ids).
+Query params (all optional):
+
+- `page`, `pageSize`, `search`, `ids` (comma-separated word ids)
+- `sort` — `percentage_asc` (worst learned first) or `percentage_desc` (best learned first). Without it, results are sorted alphabetically.
+- `filter` — `not_learned` (`0%`), `poor` (`1–39%`), `average` (`40–99%`), `learned` (`100%`)
 
 Response (`200`):
 
@@ -176,7 +180,8 @@ Response (`200`):
       "wordId": 1,
       "word": "apple",
       "definitions": ["a round fruit with red or green skin"],
-      "translations": ["яблуко"]
+      "translations": ["яблуко"],
+      "percentage": 40
     }
   ],
   "total": 1,
@@ -184,6 +189,8 @@ Response (`200`):
   "page": 1
 }
 ```
+
+`percentage` is how well the user knows this word (`0–100`), based on `POST /statistics/attempts` — see the [Statistics API](#statistics-api).
 
 ### Edit a word in my dictionary — `PATCH /dictionary/:wordId`
 
@@ -201,6 +208,57 @@ Replaces the full set of definitions/translations linked to this word in the use
 ### Remove a word from my dictionary — `DELETE /dictionary/:wordId`
 
 Removes the word from the user's dictionary entirely. Returns `404 Not Found` if it wasn't there. The global word/definitions/translations records are kept (other users may still have them in their dictionaries).
+
+## Statistics API
+
+All endpoints require an `Authorization: Bearer <accessToken>` header.
+
+### Record a practice attempt — `POST /statistics/attempts`
+
+Request body:
+
+```json
+{
+  "wordId": 1,
+  "isCorrect": true
+}
+```
+
+Progress for this word (and the user's overall stats) are created lazily on the first attempt. A correct attempt increments `correctCount`; an incorrect one increments `incorrectCount` — `percentage` is only ever driven by `correctCount`.
+
+The user's streak (`currentStreak`) is updated based on the gap since the last attempt (any word): same day → unchanged, exactly one day → `+1`, more than one day → reset to `1`. `longestStreak` tracks the best `currentStreak` ever reached.
+
+Response (`201`):
+
+```json
+{
+  "wordId": 1,
+  "correctCount": 1,
+  "incorrectCount": 0,
+  "percentage": 1
+}
+```
+
+`percentage` is `min(100, round(correctCount / repetitionsTarget * 100))`. `repetitionsTarget` defaults to `100` (how many correct repetitions count as fully learned) — a future account-settings feature will let users change it to `50` or `150`.
+
+### Get my statistics — `GET /statistics`
+
+Response (`200`):
+
+```json
+{
+  "repetitionsTarget": 100,
+  "currentStreak": 3,
+  "longestStreak": 5,
+  "lastPracticedAt": "2024-01-15T12:00:00.000Z",
+  "words": [
+    { "wordId": 2, "correctCount": 10, "incorrectCount": 5, "lastPracticedAt": "2024-01-15T12:00:00.000Z", "percentage": 10 },
+    { "wordId": 1, "correctCount": 80, "incorrectCount": 1, "lastPracticedAt": "2024-01-15T12:00:00.000Z", "percentage": 80 }
+  ]
+}
+```
+
+`words` is sorted by `percentage` ascending (worst-known words first).
 
 ## Deployment
 
