@@ -3,17 +3,24 @@ import { eq } from 'drizzle-orm';
 import DB from '../db/index.js';
 import { usersTable } from '../db/schemas/users.schema.js';
 import { User } from './entities/user.entity.js';
-import { CreateUserDto } from './dto/create-user.dto.js';
-import { UpdateUserDto } from './dto/update-user.dto.js';
+import { UpdateUserDto } from './dto.js';
+
+type PublicUser = Omit<User, 'passwordHash'>;
+
+const publicColumns = {
+  id: usersTable.id,
+  name: usersTable.name,
+  email: usersTable.email,
+};
 
 @Injectable()
 export class UsersService {
-  findAll(): Promise<User[]> {
-    return DB.select().from(usersTable);
+  findAll(): Promise<PublicUser[]> {
+    return DB.select(publicColumns).from(usersTable);
   }
 
-  async findOne(id: number): Promise<User> {
-    const [user] = await DB.select()
+  async findOne(id: number): Promise<PublicUser> {
+    const [user] = await DB.select(publicColumns)
       .from(usersTable)
       .where(eq(usersTable.id, id));
     if (!user) {
@@ -22,17 +29,12 @@ export class UsersService {
     return user;
   }
 
-  async create(dto: CreateUserDto): Promise<User> {
-    const [user] = await DB.insert(usersTable).values(dto).returning();
-    return user;
-  }
-
-  async update(id: number, dto: UpdateUserDto): Promise<User> {
+  async update(id: number, dto: UpdateUserDto): Promise<PublicUser> {
     await this.findOne(id);
     const [user] = await DB.update(usersTable)
       .set(dto)
       .where(eq(usersTable.id, id))
-      .returning();
+      .returning(publicColumns);
     return user;
   }
 

@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { createObserveModule } from '@nestjs/observe';
 import { UsersModule } from './users/users.module.js';
+import { AuthModule } from './auth/auth.module.js';
+import { DictionaryModule } from './dictionary/dictionary.module.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
 
@@ -13,7 +15,9 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
       appSecret: 'YOUR_APP_SECRET',
       serviceId: 'pw-backend',
     }),
+    AuthModule,
     UsersModule,
+    DictionaryModule,
   ],
 })
 export class AppModule {}
