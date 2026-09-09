@@ -20,7 +20,9 @@
     "types": ["vitest/globals", "node"],
     "baseUrl": "./src",
     "paths": {
-      "@auth/*": ["auth/*"]
+      "@/constants/*": ["constants/*"],
+      "@/db/*": ["db/*"],
+      "@/auth/*": ["auth/*"]
     }
   }
 }
