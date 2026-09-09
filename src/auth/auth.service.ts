@@ -7,18 +7,21 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { compare, hash } from 'bcrypt';
 import { and, eq, sql } from 'drizzle-orm';
+import { Logger } from 'nestjs-pino';
 
 import { errors } from '../constants/errors.js';
 import { BCRYPT_SALT_ROUNDS } from '../constants/index.js';
 import DB from '../db/index.js';
 import { authIdentitiesTable } from '../db/schemas/auth.schemas.js';
 import { usersTable } from '../db/schemas/user.schemas.js';
-
 import { AccessTokenData, SignInDto, SignUpDto } from './dto.js';
 
 @Injectable()
 export class AuthService {
-  constructor(private readonly jwtService: JwtService) {}
+  constructor(
+    private readonly jwtService: JwtService,
+    private readonly logger: Logger,
+  ) {}
 
   private signAccessToken(data: AccessTokenData) {
     return this.jwtService.signAsync({
@@ -34,6 +37,10 @@ export class AuthService {
       .where(eq(usersTable.email, dto.email));
 
     if (existingUser) {
+      this.logger.warn(
+        { email: dto.email },
+        'Sign-up attempt with an email already in use',
+      );
       throw new ConflictException(errors.EMAIL_IN_USE);
     }
 
@@ -47,6 +54,7 @@ export class AuthService {
         .returning();
 
       if (!newUser) {
+        this.logger.error({ email: dto.email }, 'User insert returned no row');
         throw new InternalServerErrorException(errors.SOMETHING_WENT_WRONG);
       }
 
@@ -56,6 +64,10 @@ export class AuthService {
         .returning();
 
       if (!newIdentity) {
+        this.logger.error(
+          { userId: newUser.id },
+          'Auth identity insert returned no row',
+        );
         throw new InternalServerErrorException(errors.SOMETHING_WENT_WRONG);
       }
 
@@ -77,6 +89,10 @@ export class AuthService {
       .where(eq(usersTable.email, dto.email));
 
     if (!user) {
+      this.logger.warn(
+        { email: dto.email },
+        'Sign-in attempt for unknown email',
+      );
       throw new UnauthorizedException(errors.INVALID_CREDENTIALS);
     }
 
@@ -90,6 +106,10 @@ export class AuthService {
       );
 
     if (!userAuthIdentity || !userAuthIdentity.passwordHash) {
+      this.logger.warn(
+        { userId: user.id },
+        'Sign-in attempt without local identity',
+      );
       throw new UnauthorizedException(errors.INVALID_CREDENTIALS);
     }
 
@@ -99,6 +119,10 @@ export class AuthService {
     );
 
     if (!isPasswordValid) {
+      this.logger.warn(
+        { userId: user.id },
+        'Sign-in attempt with invalid password',
+      );
       throw new UnauthorizedException(errors.INVALID_CREDENTIALS);
     }
 
