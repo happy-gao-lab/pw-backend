@@ -23,6 +23,11 @@ export class SignInDto {
   password: string;
 }
 
+export class GoogleSignInDto {
+  @IsString()
+  idToken: string;
+}
+
 export class AccessTokenData {
   id: number;
   email: string;

@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { errors } from '../../constants/errors.js';
 import { AuthService } from '../auth.service.js';
-import { SignInDto, SignUpDto } from '../dto.js';
+import { GoogleSignInDto, SignInDto, SignUpDto } from '../dto.js';
 
 const { hash, compare } = vi.hoisted(() => ({
   hash: vi.fn(),
@@ -17,6 +17,16 @@ const { hash, compare } = vi.hoisted(() => ({
 }));
 
 vi.mock('bcrypt', () => ({ hash, compare }));
+
+const { verifyIdToken } = vi.hoisted(() => ({
+  verifyIdToken: vi.fn(),
+}));
+
+vi.mock('google-auth-library', () => ({
+  OAuth2Client: vi.fn().mockImplementation(function OAuth2Client() {
+    return { verifyIdToken };
+  }),
+}));
 
 const mockDB = vi.hoisted(() => ({
   select: vi.fn(),
@@ -40,6 +50,12 @@ function insertChain(result: unknown[]) {
     values: vi.fn().mockReturnValue({
       returning: vi.fn().mockResolvedValue(result),
     }),
+  };
+}
+
+function insertChainNoReturning() {
+  return {
+    values: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -71,6 +87,8 @@ const signInDto: SignInDto = {
   email: 'newbie@example.com',
   password: 'password123',
 };
+
+const googleDto: GoogleSignInDto = { idToken: 'google-id-token' };
 
 describe('AuthService', () => {
   let jwtService: { signAsync: ReturnType<typeof vi.fn> };
@@ -244,6 +262,100 @@ describe('AuthService', () => {
 
       expect(mockDB.select).not.toHaveBeenCalled();
       expect(mockDB.update).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('googleAuth', () => {
+    it('throws UnauthorizedException if the token payload is missing sub/email', async () => {
+      verifyIdToken.mockResolvedValue({ getPayload: () => ({}) });
+
+      await expect(service.googleAuth(googleDto)).rejects.toThrow(
+        new UnauthorizedException(errors.INVALID_TOKEN),
+      );
+    });
+
+    it('signs in an existing google identity without touching users table lookups', async () => {
+      verifyIdToken.mockResolvedValue({
+        getPayload: () => ({
+          sub: 'google-sub-1',
+          email: 'user@example.com',
+          name: 'User',
+        }),
+      });
+      mockDB.select
+        .mockReturnValueOnce(selectChain([{ userId: 1 }])) // existingIdentity
+        .mockReturnValueOnce(
+          selectChain([{ id: 1, email: 'user@example.com', tokenVersion: 0 }]),
+        ); // final user fetch
+      jwtService.signAsync.mockResolvedValue('signed-token');
+
+      const result = await service.googleAuth(googleDto);
+
+      expect(result).toEqual({ accessToken: 'signed-token' });
+      expect(mockDB.insert).not.toHaveBeenCalled();
+      expect(mockDB.transaction).not.toHaveBeenCalled();
+    });
+
+    it('links a google identity to an existing local user by email', async () => {
+      verifyIdToken.mockResolvedValue({
+        getPayload: () => ({
+          sub: 'google-sub-2',
+          email: 'user@example.com',
+          name: 'User',
+        }),
+      });
+      mockDB.select
+        .mockReturnValueOnce(selectChain([])) // no existingIdentity
+        .mockReturnValueOnce(selectChain([{ id: 2, email: 'user@example.com' }])) // existingUser by email
+        .mockReturnValueOnce(
+          selectChain([{ id: 2, email: 'user@example.com', tokenVersion: 0 }]),
+        ); // final user fetch
+      mockDB.insert.mockReturnValue(insertChainNoReturning());
+      jwtService.signAsync.mockResolvedValue('signed-token');
+
+      const result = await service.googleAuth(googleDto);
+
+      expect(result).toEqual({ accessToken: 'signed-token' });
+      expect(mockDB.insert).toHaveBeenCalledTimes(1);
+      expect(mockDB.transaction).not.toHaveBeenCalled();
+    });
+
+    it('creates a new user when no identity or email match exists', async () => {
+      verifyIdToken.mockResolvedValue({
+        getPayload: () => ({
+          sub: 'google-sub-3',
+          email: 'brandnew@example.com',
+          name: 'Brand New',
+        }),
+      });
+      mockDB.select
+        .mockReturnValueOnce(selectChain([])) // no existingIdentity
+        .mockReturnValueOnce(selectChain([])) // no existingUser by email
+        .mockReturnValueOnce(
+          selectChain([
+            { id: 3, email: 'brandnew@example.com', tokenVersion: 0 },
+          ]),
+        ); // final user fetch
+      const newUser = {
+        id: 3,
+        email: 'brandnew@example.com',
+        tokenVersion: 0,
+      };
+      const tx = {
+        insert: vi
+          .fn()
+          .mockReturnValueOnce(insertChain([newUser]))
+          .mockReturnValueOnce(insertChain([{ id: 1 }])),
+      };
+      mockDB.transaction.mockImplementation((cb: (tx: unknown) => unknown) =>
+        cb(tx),
+      );
+      jwtService.signAsync.mockResolvedValue('signed-token');
+
+      const result = await service.googleAuth(googleDto);
+
+      expect(result).toEqual({ accessToken: 'signed-token' });
+      expect(mockDB.transaction).toHaveBeenCalledTimes(1);
     });
   });
 });

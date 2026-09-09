@@ -5,7 +5,7 @@ import { authThrottler } from '../constants/index.js';
 import { AuthGuard } from './auth.guard.js';
 import type { AuthenticatedRequest } from './auth.guard.js';
 import { AuthService } from './auth.service.js';
-import { SignInDto, SignUpDto } from './dto.js';
+import { GoogleSignInDto, SignInDto, SignUpDto } from './dto.js';
 
 @Controller('auth')
 export class AuthController {
@@ -26,5 +26,10 @@ export class AuthController {
   @UseGuards(AuthGuard)
   logout(@Req() req: AuthenticatedRequest) {
     return this.authService.logout(req.user.id);
+  }
+
+  @Post('google')
+  googleAuth(@Body() dto: GoogleSignInDto) {
+    return this.authService.googleAuth(dto);
   }
 }

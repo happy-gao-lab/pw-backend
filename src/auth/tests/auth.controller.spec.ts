@@ -3,13 +3,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthController } from '../auth.controller.js';
 import { AuthenticatedRequest } from '../auth.guard.js';
 import { AuthService } from '../auth.service.js';
-import { SignInDto, SignUpDto } from '../dto.js';
+import { GoogleSignInDto, SignInDto, SignUpDto } from '../dto.js';
 
 describe('AuthController', () => {
   let authService: {
     localSignUp: ReturnType<typeof vi.fn>;
     localSignIn: ReturnType<typeof vi.fn>;
     logout: ReturnType<typeof vi.fn>;
+    googleAuth: ReturnType<typeof vi.fn>;
   };
   let controller: AuthController;
 
@@ -18,6 +19,7 @@ describe('AuthController', () => {
       localSignUp: vi.fn(),
       localSignIn: vi.fn(),
       logout: vi.fn(),
+      googleAuth: vi.fn(),
     };
     controller = new AuthController(authService as unknown as AuthService);
   });
@@ -53,5 +55,13 @@ describe('AuthController', () => {
     controller.logout(req);
 
     expect(authService.logout).toHaveBeenCalledWith(42);
+  });
+
+  it('delegates googleAuth to authService.googleAuth', () => {
+    const dto: GoogleSignInDto = { idToken: 'google-id-token' };
+
+    controller.googleAuth(dto);
+
+    expect(authService.googleAuth).toHaveBeenCalledWith(dto);
   });
 });
