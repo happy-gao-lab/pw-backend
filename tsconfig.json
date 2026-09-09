@@ -17,10 +17,6 @@
     "skipLibCheck": true,
     "strict": true,
     "strictPropertyInitialization": false,
-    "types": ["vitest/globals", "node"],
-    "baseUrl": "./src",
-    "paths": {
-      "@auth/*": ["auth/*"]
-    }
+    "types": ["vitest/globals", "node"]
   }
 }

@@ -1,8 +1,11 @@
-import { neon } from '@neondatabase/serverless';
-import { drizzle } from 'drizzle-orm/neon-http';
+import { neonConfig, Pool } from '@neondatabase/serverless';
+import { drizzle } from 'drizzle-orm/neon-serverless';
+import ws from 'ws';
 
-const sql = neon(process.env.DATABASE_URL!);
+neonConfig.webSocketConstructor = ws;
 
-const DB = drizzle({ client: sql });
+const pool = new Pool({ connectionString: process.env.DATABASE_URL! });
+
+const DB = drizzle({ client: pool });
 
 export default DB;
