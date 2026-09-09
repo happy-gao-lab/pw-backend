@@ -4,4 +4,5 @@ export const errors = {
   INVALID_CREDENTIALS: 'Invalid credentials',
   MISSING_TOKEN: 'Missing access token',
   INVALID_TOKEN: 'Invalid or expired token',
+  ACCOUNT_LOCKED: 'Account temporarily locked due to too many failed attempts',
 };

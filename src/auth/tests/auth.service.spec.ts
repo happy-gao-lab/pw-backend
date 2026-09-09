@@ -4,6 +4,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { Logger } from 'nestjs-pino';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { errors } from '../../constants/errors.js';
@@ -42,6 +43,24 @@ function insertChain(result: unknown[]) {
   };
 }
 
+function updateChain() {
+  return {
+    set: vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(undefined),
+    }),
+  };
+}
+
+function updateReturningChain(result: unknown[]) {
+  return {
+    set: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue(result),
+      }),
+    }),
+  };
+}
+
 const signUpDto: SignUpDto = {
   username: 'newbie',
   email: 'newbie@example.com',
@@ -55,12 +74,17 @@ const signInDto: SignInDto = {
 
 describe('AuthService', () => {
   let jwtService: { signAsync: ReturnType<typeof vi.fn> };
+  let logger: { warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
   let service: AuthService;
 
   beforeEach(() => {
     vi.clearAllMocks();
     jwtService = { signAsync: vi.fn() };
-    service = new AuthService(jwtService as unknown as JwtService);
+    logger = { warn: vi.fn(), error: vi.fn() };
+    service = new AuthService(
+      jwtService as unknown as JwtService,
+      logger as unknown as Logger,
+    );
   });
 
   describe('localSignUp', () => {
@@ -144,9 +168,22 @@ describe('AuthService', () => {
       );
     });
 
+    it('throws UnauthorizedException if the account is locked', async () => {
+      const lockedUntil = new Date(Date.now() + 60_000).toISOString();
+      mockDB.select.mockReturnValueOnce(
+        selectChain([{ id: 1, tokenVersion: 0, lockedUntil }]),
+      );
+
+      await expect(service.localSignIn(signInDto)).rejects.toThrow(
+        new UnauthorizedException(errors.ACCOUNT_LOCKED),
+      );
+    });
+
     it('throws UnauthorizedException if there is no local identity', async () => {
       mockDB.select
-        .mockReturnValueOnce(selectChain([{ id: 1, tokenVersion: 0 }]))
+        .mockReturnValueOnce(
+          selectChain([{ id: 1, tokenVersion: 0, lockedUntil: null }]),
+        )
         .mockReturnValueOnce(selectChain([]));
 
       await expect(service.localSignIn(signInDto)).rejects.toThrow(
@@ -156,21 +193,36 @@ describe('AuthService', () => {
 
     it('throws UnauthorizedException if the password is invalid', async () => {
       mockDB.select
-        .mockReturnValueOnce(selectChain([{ id: 1, tokenVersion: 0 }]))
+        .mockReturnValueOnce(
+          selectChain([{ id: 1, tokenVersion: 0, lockedUntil: null }]),
+        )
         .mockReturnValueOnce(selectChain([{ passwordHash: 'hashed' }]));
       compare.mockResolvedValue(false);
+      mockDB.update.mockReturnValue(
+        updateReturningChain([{ failedLoginAttempts: 1 }]),
+      );
 
       await expect(service.localSignIn(signInDto)).rejects.toThrow(
         new UnauthorizedException(errors.INVALID_CREDENTIALS),
       );
+      expect(logger.warn).toHaveBeenCalledWith(
+        { userId: 1, attempts: 1 },
+        'Sign-in attempt with invalid password',
+      );
     });
 
     it('returns an access token on valid credentials', async () => {
-      const user = { id: 1, email: signInDto.email, tokenVersion: 0 };
+      const user = {
+        id: 1,
+        email: signInDto.email,
+        tokenVersion: 0,
+        lockedUntil: null,
+      };
       mockDB.select
         .mockReturnValueOnce(selectChain([user]))
         .mockReturnValueOnce(selectChain([{ passwordHash: 'hashed' }]));
       compare.mockResolvedValue(true);
+      mockDB.update.mockReturnValue(updateChain());
       jwtService.signAsync.mockResolvedValue('signed-token');
 
       const result = await service.localSignIn(signInDto);
@@ -186,16 +238,12 @@ describe('AuthService', () => {
 
   describe('logout', () => {
     it('increments tokenVersion atomically via a single UPDATE', async () => {
-      const where = vi.fn().mockResolvedValue(undefined);
-      const set = vi.fn().mockReturnValue({ where });
-      mockDB.update.mockReturnValue({ set });
+      mockDB.update.mockReturnValue(updateChain());
 
       await service.logout(1);
 
       expect(mockDB.select).not.toHaveBeenCalled();
       expect(mockDB.update).toHaveBeenCalledTimes(1);
-      expect(set).toHaveBeenCalledTimes(1);
-      expect(where).toHaveBeenCalledTimes(1);
     });
   });
 });

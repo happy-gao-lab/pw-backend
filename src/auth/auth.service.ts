@@ -10,10 +10,10 @@ import { and, eq, sql } from 'drizzle-orm';
 import { Logger } from 'nestjs-pino';
 
 import { errors } from '../constants/errors.js';
-import { BCRYPT_SALT_ROUNDS } from '../constants/index.js';
+import { authThrottler, BCRYPT_SALT_ROUNDS } from '../constants/index.js';
 import DB from '../db/index.js';
 import { authIdentitiesTable } from '../db/schemas/auth.schemas.js';
-import { usersTable } from '../db/schemas/user.schemas.js';
+import { UsersTable, usersTable } from '../db/schemas/user.schemas.js';
 import { AccessTokenData, SignInDto, SignUpDto } from './dto.js';
 
 @Injectable()
@@ -29,6 +29,33 @@ export class AuthService {
       email: data.email,
       tokenVersion: data.tokenVersion,
     });
+  }
+
+  private async registerFailedAttempt(user: UsersTable): Promise<void> {
+    const lockUntil = new Date(
+      Date.now() + authThrottler.LOCKOUT_DURATION_MS,
+    ).toISOString();
+
+    const [updated] = await DB.update(usersTable)
+      .set({
+        failedLoginAttempts: sql`${usersTable.failedLoginAttempts} + 1`,
+        lockedUntil: sql`CASE WHEN ${usersTable.failedLoginAttempts} + 1 >= ${authThrottler.LIMIT}
+        THEN ${lockUntil}
+        ELSE ${usersTable.lockedUntil} END`,
+      })
+      .where(eq(usersTable.id, user.id))
+      .returning({ failedLoginAttempts: usersTable.failedLoginAttempts });
+
+    this.logger.warn(
+      { userId: user.id, attempts: updated.failedLoginAttempts },
+      'Sign-in attempt with invalid password',
+    );
+  }
+
+  private async resetFailedAttempts(userId: number): Promise<void> {
+    await DB.update(usersTable)
+      .set({ failedLoginAttempts: 0, lockedUntil: null })
+      .where(eq(usersTable.id, userId));
   }
 
   async localSignUp(dto: SignUpDto) {
@@ -96,6 +123,10 @@ export class AuthService {
       throw new UnauthorizedException(errors.INVALID_CREDENTIALS);
     }
 
+    if (user.lockedUntil && new Date(user.lockedUntil) > new Date()) {
+      throw new UnauthorizedException(errors.ACCOUNT_LOCKED);
+    }
+
     const [userAuthIdentity] = await DB.select()
       .from(authIdentitiesTable)
       .where(
@@ -119,12 +150,11 @@ export class AuthService {
     );
 
     if (!isPasswordValid) {
-      this.logger.warn(
-        { userId: user.id },
-        'Sign-in attempt with invalid password',
-      );
+      await this.registerFailedAttempt(user);
       throw new UnauthorizedException(errors.INVALID_CREDENTIALS);
     }
+
+    await this.resetFailedAttempts(user.id);
 
     const accessToken = await this.signAccessToken({
       id: user.id,
