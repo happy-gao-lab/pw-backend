@@ -8,9 +8,9 @@ import { JwtService } from '@nestjs/jwt';
 import { eq } from 'drizzle-orm';
 import { Request } from 'express';
 
-import { errors } from '@/constants/errors.js';
-import DB from '@/db/index.js';
-import { usersTable } from '@/db/schemas/user.schemas.js';
+import { errors } from '../constants/errors.js';
+import DB from '../db/index.js';
+import { usersTable } from '../db/schemas/user.schemas.js';
 
 import { AccessTokenData } from './dto.js';
 

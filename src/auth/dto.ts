@@ -1,6 +1,6 @@
 import { IsEmail, IsString, MinLength } from 'class-validator';
 
-import { MIN_PASSWORD_LENGTH } from '@/constants/index.js';
+import { MIN_PASSWORD_LENGTH } from '../constants/index.js';
 
 export class SignUpDto {
   @IsString()

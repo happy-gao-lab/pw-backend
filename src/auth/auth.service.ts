@@ -8,11 +8,11 @@ import { JwtService } from '@nestjs/jwt';
 import { compare, hash } from 'bcrypt';
 import { and, eq, sql } from 'drizzle-orm';
 
-import { errors } from '@/constants/errors.js';
-import { BCRYPT_SALT_ROUNDS } from '@/constants/index.js';
-import DB from '@/db/index.js';
-import { authIdentitiesTable } from '@/db/schemas/auth.schemas.js';
-import { usersTable } from '@/db/schemas/user.schemas.js';
+import { errors } from '../constants/errors.js';
+import { BCRYPT_SALT_ROUNDS } from '../constants/index.js';
+import DB from '../db/index.js';
+import { authIdentitiesTable } from '../db/schemas/auth.schemas.js';
+import { usersTable } from '../db/schemas/user.schemas.js';
 
 import { AccessTokenData, SignInDto, SignUpDto } from './dto.js';
 

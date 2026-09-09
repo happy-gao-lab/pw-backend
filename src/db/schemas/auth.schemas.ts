@@ -10,7 +10,7 @@ import {
 
 import { usersTable } from './user.schemas.js';
 
-const authProvider = pgEnum('provider', ['local', 'google']);
+export const authProvider = pgEnum('provider', ['local', 'google']);
 
 export const authIdentitiesTable = pgTable(
   'auth_identities',
