@@ -4,33 +4,16 @@ import { createObserveModule } from '@nestjs/observe';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 
-import { globalThrottler } from './constants/index.js';
+import {
+  loggerModule,
+  observeModule,
+  throttlerModule,
+} from './constants/app-modules-config.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { GlobalDictionaryModule } from './modules/global-dictionary/global-dictionary.module.js';
 import { UserDictionaryModule } from './modules/user-dictionary/user-dictionary.module.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
-
-const observeModule = {
-  appKey: 'YOUR_APP_KEY',
-  appSecret: 'YOUR_APP_SECRET',
-  serviceId: 'pw-backend',
-};
-
-const loggerModule = {
-  pinoHttp: {
-    level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
-    transport:
-      process.env.NODE_ENV !== 'production'
-        ? { target: 'pino-pretty' }
-        : undefined,
-  },
-};
-
-const throttlerModule = {
-  ttl: globalThrottler.TTL,
-  limit: globalThrottler.LIMIT,
-};
 
 @Module({
   imports: [
@@ -39,6 +22,7 @@ const throttlerModule = {
     ObserveModule.forRoot(observeModule),
     LoggerModule.forRoot(loggerModule),
     ThrottlerModule.forRoot([throttlerModule]),
+
     AuthModule,
     GlobalDictionaryModule,
     UserDictionaryModule,

@@ -8,4 +8,5 @@ export const errors = {
   DEFINITION_REQUIRED: 'At least one definition is required',
   TRANSLATION_REQUIRED: 'At least one translation is required',
   LONG_VALUE: 'Value is too long (max 255 characters)',
+  WORD_NOT_FOUND: 'Word not found in dictionary',
 };

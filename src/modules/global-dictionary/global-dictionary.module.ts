@@ -7,5 +7,6 @@ import { GlobalDictionaryService } from './global-dictionary.service.js';
   imports: [AuthModule],
   controllers: [],
   providers: [GlobalDictionaryService],
+  exports: [GlobalDictionaryService],
 })
 export class GlobalDictionaryModule {}

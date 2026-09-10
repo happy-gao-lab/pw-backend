@@ -1,3 +1,5 @@
+import { defineRelations } from 'drizzle-orm';
+import { relations } from 'drizzle-orm/_relations';
 import {
   integer,
   pgTable,
