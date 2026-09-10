@@ -10,11 +10,11 @@ import { and, eq, sql } from 'drizzle-orm';
 import { OAuth2Client } from 'google-auth-library';
 import { Logger } from 'nestjs-pino';
 
-import { errors } from '../constants/errors.js';
-import { authThrottler, BCRYPT_SALT_ROUNDS } from '../constants/index.js';
-import DB from '../db/index.js';
-import { authIdentitiesTable } from '../db/schemas/auth.schemas.js';
-import { UsersTable, usersTable } from '../db/schemas/user.schemas.js';
+import { errors } from '../../constants/errors.js';
+import { authThrottler, BCRYPT_SALT_ROUNDS } from '../../constants/index.js';
+import DB from '../../db/index.js';
+import { authIdentitiesTable } from '../../db/schemas/auth.schemas.js';
+import { User, usersTable } from '../../db/schemas/user.schemas.js';
 import {
   AccessTokenData,
   GoogleSignInDto,
@@ -39,7 +39,7 @@ export class AuthService {
     });
   }
 
-  private async registerFailedAttempt(user: UsersTable): Promise<void> {
+  private async registerFailedAttempt(user: User): Promise<void> {
     const lockUntil = new Date(
       Date.now() + authThrottler.LOCKOUT_DURATION_MS,
     ).toISOString();

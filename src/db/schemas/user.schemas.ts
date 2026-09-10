@@ -18,6 +18,7 @@ export const usersTable = pgTable('users', {
   lockedUntil: timestamp('locked_until', { mode: 'string' }),
 });
 
-export type UsersTable = typeof usersTable.$inferSelect;
+export type UsersTable = typeof usersTable;
+export type User = typeof usersTable.$inferSelect;
 export type CreateUser = typeof usersTable.$inferInsert;
 export type UpdateUser = Partial<CreateUser>;

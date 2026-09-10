@@ -34,6 +34,7 @@ export const authIdentitiesTable = pgTable(
   ],
 );
 
-export type AuthIdentitiesTable = typeof authIdentitiesTable.$inferSelect;
+export type AuthIdentitiesTable = typeof authIdentitiesTable;
+export type AuthIdentity = typeof authIdentitiesTable.$inferSelect;
 export type CreateAuthIdentity = typeof authIdentitiesTable.$inferInsert;
 export type UpdateAuthIdentity = Partial<CreateAuthIdentity>;

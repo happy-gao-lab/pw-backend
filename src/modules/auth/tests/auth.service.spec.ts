@@ -7,7 +7,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Logger } from 'nestjs-pino';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { errors } from '../../constants/errors.js';
+import { errors } from '../../../constants/errors.js';
 import { AuthService } from '../auth.service.js';
 import { GoogleSignInDto, SignInDto, SignUpDto } from '../dto.js';
 
@@ -35,7 +35,7 @@ const mockDB = vi.hoisted(() => ({
   transaction: vi.fn(),
 }));
 
-vi.mock('../../db/index.js', () => ({ default: mockDB }));
+vi.mock('../../../db/index.js', () => ({ default: mockDB }));
 
 function selectChain(result: unknown[]) {
   return {

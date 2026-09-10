@@ -1,7 +1,7 @@
 import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 
-import { authThrottler } from '../constants/index.js';
+import { authThrottler } from '../../constants/index.js';
 import { AuthGuard } from './auth.guard.js';
 import type { AuthenticatedRequest } from './auth.guard.js';
 import { AuthService } from './auth.service.js';

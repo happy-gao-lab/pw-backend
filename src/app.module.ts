@@ -4,8 +4,10 @@ import { createObserveModule } from '@nestjs/observe';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 
-import { AuthModule } from './auth/auth.module.js';
 import { globalThrottler } from './constants/index.js';
+import { AuthModule } from './modules/auth/auth.module.js';
+import { GlobalDictionaryModule } from './modules/global-dictionary/global-dictionary.module.js';
+import { UserDictionaryModule } from './modules/user-dictionary/user-dictionary.module.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
 
@@ -38,6 +40,8 @@ const throttlerModule = {
     LoggerModule.forRoot(loggerModule),
     ThrottlerModule.forRoot([throttlerModule]),
     AuthModule,
+    GlobalDictionaryModule,
+    UserDictionaryModule,
   ],
   controllers: [],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

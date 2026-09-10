@@ -3,12 +3,12 @@ import { ExecutionContext } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { errors } from '../../constants/errors.js';
+import { errors } from '../../../constants/errors.js';
 import { AuthenticatedRequest, AuthGuard } from '../auth.guard.js';
 
 const mockDB = vi.hoisted(() => ({ select: vi.fn() }));
 
-vi.mock('../../db/index.js', () => ({ default: mockDB }));
+vi.mock('../../../db/index.js', () => ({ default: mockDB }));
 
 function selectChain(result: unknown[]) {
   return {
