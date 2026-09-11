@@ -13,3 +13,13 @@ export class CreateWordDto {
   @IsString({ each: true })
   translations: string[];
 }
+
+export class UpdateWordEntryDto {
+  @IsArray()
+  @IsString({ each: true })
+  translations: string[];
+
+  @IsArray()
+  @IsString({ each: true })
+  definitions: string[];
+}

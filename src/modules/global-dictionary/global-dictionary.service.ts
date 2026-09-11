@@ -16,7 +16,7 @@ import {
   wordsTable,
 } from '../../db/schemas/global-dictionary.schemas.js';
 import { Tx } from '../../types/index.js';
-import { CreateWordDto } from './dto.js';
+import { CreateWordDto, UpdateWordEntryDto } from './dto.js';
 
 @Injectable()
 export class GlobalDictionaryService {
@@ -107,6 +107,7 @@ export class GlobalDictionaryService {
   async createWordEntry(dto: CreateWordDto) {
     return await DB.transaction(async (tx) => {
       const wordId = await this.addWord(tx, dto.value);
+
       const translationsIds = await this.addWordValues(
         tx,
         translationsTable,
@@ -114,6 +115,33 @@ export class GlobalDictionaryService {
         wordId,
         dto.translations,
       );
+
+      const definitionsIds = await this.addWordValues(
+        tx,
+        definitionsTable,
+        'definitions',
+        wordId,
+        dto.definitions,
+      );
+
+      return {
+        wordId,
+        translations: translationsIds,
+        definitions: definitionsIds,
+      };
+    });
+  }
+
+  async updateWordEntry(wordId: number, dto: UpdateWordEntryDto) {
+    return await DB.transaction(async (tx) => {
+      const translationsIds = await this.addWordValues(
+        tx,
+        translationsTable,
+        'translations',
+        wordId,
+        dto.translations,
+      );
+
       const definitionsIds = await this.addWordValues(
         tx,
         definitionsTable,

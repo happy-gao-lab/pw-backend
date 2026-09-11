@@ -19,6 +19,7 @@ import {
 import { Tx } from '../../types/index.js';
 import { CreateWordDto } from '../global-dictionary/dto.js';
 import { GlobalDictionaryService } from '../global-dictionary/global-dictionary.service.js';
+import { UpdateUserWordEntryDto } from './dto.js';
 
 @Injectable()
 export class UserDictionaryService {
@@ -79,6 +80,21 @@ export class UserDictionaryService {
     return rows.map((row) => row.id);
   }
 
+  private async removeUserWordValues(
+    tx: Tx,
+    table: UserWordTranslationsTable | UserWordDefinitionsTable,
+    userWordId: number,
+    ids: number[],
+  ) {
+    if (ids.length === 0) {
+      return;
+    }
+
+    await tx
+      .delete(table)
+      .where(and(eq(table.userWordId, userWordId), inArray(table.id, ids)));
+  }
+
   async createUserWordEntry(userId: number, dto: CreateWordDto) {
     if (dto.definitions.length === 0 || dto.translations.length === 0) {
       throw new BadRequestException(
@@ -121,6 +137,66 @@ export class UserDictionaryService {
     if (deleted.length === 0) {
       throw new NotFoundException(errors.WORD_NOT_FOUND);
     }
+  }
+
+  async updateUserWordEntry(
+    userId: number,
+    userWordId: number,
+    dto: UpdateUserWordEntryDto,
+  ) {
+    const [userWord] = await DB.select({ wordId: userWordsTable.wordId })
+      .from(userWordsTable)
+      .where(
+        and(
+          eq(userWordsTable.id, userWordId),
+          eq(userWordsTable.userId, userId),
+        ),
+      );
+
+    if (!userWord) {
+      throw new NotFoundException(errors.WORD_NOT_FOUND);
+    }
+
+    const wordEntry = await this.globalDictionaryService.updateWordEntry(
+      userWord.wordId,
+      { translations: dto.addTranslations, definitions: dto.addDefinitions },
+    );
+
+    return await DB.transaction(async (tx) => {
+      const addedTranslations = await this.addUserWordValues(
+        tx,
+        userWordTranslationsTable,
+        userWordId,
+        wordEntry.translations,
+      );
+
+      const addedDefinitions = await this.addUserWordValues(
+        tx,
+        userWordDefinitionsTable,
+        userWordId,
+        wordEntry.definitions,
+      );
+
+      await this.removeUserWordValues(
+        tx,
+        userWordTranslationsTable,
+        userWordId,
+        dto.removeTranslationIds,
+      );
+
+      await this.removeUserWordValues(
+        tx,
+        userWordDefinitionsTable,
+        userWordId,
+        dto.removeDefinitionIds,
+      );
+
+      return {
+        userWordId,
+        addedTranslations,
+        addedDefinitions,
+      };
+    });
   }
 
   async getUserDictionary(userId: number) {
