@@ -3,13 +3,13 @@ import {
   InternalServerErrorException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
 import { Logger } from 'nestjs-pino';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { errors } from '../../constants/errors.js';
 import { AuthService } from '../auth.service.js';
 import { GoogleSignInDto, SignInDto, SignUpDto } from '../dto.js';
+import { SessionService } from '../session.service.js';
 
 const { hash, compare } = vi.hoisted(() => ({
   hash: vi.fn(),
@@ -53,9 +53,11 @@ function insertChain(result: unknown[]) {
   };
 }
 
-function insertChainNoReturning() {
+function insertConflictChain() {
   return {
-    values: vi.fn().mockResolvedValue(undefined),
+    values: vi.fn().mockReturnValue({
+      onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
+    }),
   };
 }
 
@@ -77,6 +79,18 @@ function updateReturningChain(result: unknown[]) {
   };
 }
 
+function uniqueViolation() {
+  return Object.assign(new Error('duplicate key value'), { code: '23505' });
+}
+
+function futureDate() {
+  return new Date(Date.now() + 60_000).toISOString();
+}
+
+function pastDate() {
+  return new Date(Date.now() - 60_000).toISOString();
+}
+
 const signUpDto: SignUpDto = {
   username: 'newbie',
   email: 'newbie@example.com',
@@ -90,17 +104,30 @@ const signInDto: SignInDto = {
 
 const googleDto: GoogleSignInDto = { idToken: 'google-id-token' };
 
+const tokens = { accessToken: 'access-token', refreshToken: 'refresh-token' };
+
 describe('AuthService', () => {
-  let jwtService: { signAsync: ReturnType<typeof vi.fn> };
-  let logger: { warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
+  let sessionService: {
+    createSession: ReturnType<typeof vi.fn>;
+    revokeSession: ReturnType<typeof vi.fn>;
+    refreshSession: ReturnType<typeof vi.fn>;
+  };
+  let logger: {
+    warn: ReturnType<typeof vi.fn>;
+    error: ReturnType<typeof vi.fn>;
+  };
   let service: AuthService;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    jwtService = { signAsync: vi.fn() };
+    sessionService = {
+      createSession: vi.fn().mockResolvedValue(tokens),
+      revokeSession: vi.fn(),
+      refreshSession: vi.fn().mockResolvedValue(tokens),
+    };
     logger = { warn: vi.fn(), error: vi.fn() };
     service = new AuthService(
-      jwtService as unknown as JwtService,
+      sessionService as unknown as SessionService,
       logger as unknown as Logger,
     );
   });
@@ -111,6 +138,26 @@ describe('AuthService', () => {
 
       await expect(service.localSignUp(signUpDto)).rejects.toThrow(
         new ConflictException(errors.EMAIL_IN_USE),
+      );
+    });
+
+    it('throws ConflictException if a concurrent sign-up won the race', async () => {
+      mockDB.select.mockReturnValue(selectChain([]));
+      hash.mockResolvedValue('hashed-password');
+      mockDB.transaction.mockRejectedValue(uniqueViolation());
+
+      await expect(service.localSignUp(signUpDto)).rejects.toThrow(
+        new ConflictException(errors.EMAIL_IN_USE),
+      );
+    });
+
+    it('rethrows an error that is not a unique violation', async () => {
+      mockDB.select.mockReturnValue(selectChain([]));
+      hash.mockResolvedValue('hashed-password');
+      mockDB.transaction.mockRejectedValue(new Error('connection lost'));
+
+      await expect(service.localSignUp(signUpDto)).rejects.toThrow(
+        'connection lost',
       );
     });
 
@@ -130,11 +177,10 @@ describe('AuthService', () => {
     it('throws InternalServerErrorException if the identity insert fails', async () => {
       mockDB.select.mockReturnValue(selectChain([]));
       hash.mockResolvedValue('hashed-password');
-      const newUser = { id: 1, email: signUpDto.email, tokenVersion: 0 };
       const tx = {
         insert: vi
           .fn()
-          .mockReturnValueOnce(insertChain([newUser]))
+          .mockReturnValueOnce(insertChain([{ id: 1 }]))
           .mockReturnValueOnce(insertChain([])),
       };
       mockDB.transaction.mockImplementation((cb: (tx: unknown) => unknown) =>
@@ -146,34 +192,23 @@ describe('AuthService', () => {
       );
     });
 
-    it('creates the user and identity, then returns an access token', async () => {
+    it('creates the user and identity, then opens a session', async () => {
       mockDB.select.mockReturnValue(selectChain([]));
       hash.mockResolvedValue('hashed-password');
-      const newUser = {
-        id: 1,
-        email: signUpDto.email,
-        username: signUpDto.username,
-        tokenVersion: 0,
-      };
       const tx = {
         insert: vi
           .fn()
-          .mockReturnValueOnce(insertChain([newUser]))
+          .mockReturnValueOnce(insertChain([{ id: 1 }]))
           .mockReturnValueOnce(insertChain([{ id: 1 }])),
       };
       mockDB.transaction.mockImplementation((cb: (tx: unknown) => unknown) =>
         cb(tx),
       );
-      jwtService.signAsync.mockResolvedValue('signed-token');
 
       const result = await service.localSignUp(signUpDto);
 
-      expect(result).toEqual({ accessToken: 'signed-token' });
-      expect(jwtService.signAsync).toHaveBeenCalledWith({
-        id: newUser.id,
-        email: newUser.email,
-        tokenVersion: newUser.tokenVersion,
-      });
+      expect(result).toEqual(tokens);
+      expect(sessionService.createSession).toHaveBeenCalledWith(1);
     });
   });
 
@@ -187,9 +222,8 @@ describe('AuthService', () => {
     });
 
     it('throws UnauthorizedException if the account is locked', async () => {
-      const lockedUntil = new Date(Date.now() + 60_000).toISOString();
       mockDB.select.mockReturnValueOnce(
-        selectChain([{ id: 1, tokenVersion: 0, lockedUntil }]),
+        selectChain([{ id: 1, lockedUntil: futureDate() }]),
       );
 
       await expect(service.localSignIn(signInDto)).rejects.toThrow(
@@ -197,11 +231,21 @@ describe('AuthService', () => {
       );
     });
 
+    it('resets the attempts counter once the lock has expired', async () => {
+      mockDB.select
+        .mockReturnValueOnce(selectChain([{ id: 1, lockedUntil: pastDate() }]))
+        .mockReturnValueOnce(selectChain([]));
+      mockDB.update.mockReturnValue(updateChain());
+
+      await expect(service.localSignIn(signInDto)).rejects.toThrow(
+        new UnauthorizedException(errors.INVALID_CREDENTIALS),
+      );
+      expect(mockDB.update).toHaveBeenCalledTimes(1);
+    });
+
     it('throws UnauthorizedException if there is no local identity', async () => {
       mockDB.select
-        .mockReturnValueOnce(
-          selectChain([{ id: 1, tokenVersion: 0, lockedUntil: null }]),
-        )
+        .mockReturnValueOnce(selectChain([{ id: 1, lockedUntil: null }]))
         .mockReturnValueOnce(selectChain([]));
 
       await expect(service.localSignIn(signInDto)).rejects.toThrow(
@@ -211,9 +255,7 @@ describe('AuthService', () => {
 
     it('throws UnauthorizedException if the password is invalid', async () => {
       mockDB.select
-        .mockReturnValueOnce(
-          selectChain([{ id: 1, tokenVersion: 0, lockedUntil: null }]),
-        )
+        .mockReturnValueOnce(selectChain([{ id: 1, lockedUntil: null }]))
         .mockReturnValueOnce(selectChain([{ passwordHash: 'hashed' }]));
       compare.mockResolvedValue(false);
       mockDB.update.mockReturnValue(
@@ -227,45 +269,51 @@ describe('AuthService', () => {
         { userId: 1, attempts: 1 },
         'Sign-in attempt with invalid password',
       );
+      expect(sessionService.createSession).not.toHaveBeenCalled();
     });
 
-    it('returns an access token on valid credentials', async () => {
-      const user = {
-        id: 1,
-        email: signInDto.email,
-        tokenVersion: 0,
-        lockedUntil: null,
-      };
+    it('opens a session on valid credentials', async () => {
       mockDB.select
-        .mockReturnValueOnce(selectChain([user]))
+        .mockReturnValueOnce(selectChain([{ id: 1, lockedUntil: null }]))
         .mockReturnValueOnce(selectChain([{ passwordHash: 'hashed' }]));
       compare.mockResolvedValue(true);
       mockDB.update.mockReturnValue(updateChain());
-      jwtService.signAsync.mockResolvedValue('signed-token');
 
       const result = await service.localSignIn(signInDto);
 
-      expect(result).toEqual({ accessToken: 'signed-token' });
-      expect(jwtService.signAsync).toHaveBeenCalledWith({
-        id: user.id,
-        email: user.email,
-        tokenVersion: user.tokenVersion,
-      });
+      expect(result).toEqual(tokens);
+      expect(sessionService.createSession).toHaveBeenCalledWith(1);
     });
   });
 
   describe('logout', () => {
-    it('increments tokenVersion atomically via a single UPDATE', async () => {
-      mockDB.update.mockReturnValue(updateChain());
+    it('delegates to sessionService.revokeSession', async () => {
+      await service.logout(10);
 
-      await service.logout(1);
+      expect(sessionService.revokeSession).toHaveBeenCalledWith(10);
+    });
+  });
 
-      expect(mockDB.select).not.toHaveBeenCalled();
-      expect(mockDB.update).toHaveBeenCalledTimes(1);
+  describe('refresh', () => {
+    it('delegates to sessionService.refreshSession', async () => {
+      const result = await service.refresh({ refreshToken: 'refresh-token' });
+
+      expect(result).toEqual(tokens);
+      expect(sessionService.refreshSession).toHaveBeenCalledWith(
+        'refresh-token',
+      );
     });
   });
 
   describe('googleAuth', () => {
+    it('throws UnauthorizedException if the id token cannot be verified', async () => {
+      verifyIdToken.mockRejectedValue(new Error('invalid token'));
+
+      await expect(service.googleAuth(googleDto)).rejects.toThrow(
+        new UnauthorizedException(errors.INVALID_TOKEN),
+      );
+    });
+
     it('throws UnauthorizedException if the token payload is missing sub/email', async () => {
       verifyIdToken.mockResolvedValue({ getPayload: () => ({}) });
 
@@ -274,50 +322,62 @@ describe('AuthService', () => {
       );
     });
 
-    it('signs in an existing google identity without touching users table lookups', async () => {
+    it('throws UnauthorizedException if the google email is not verified', async () => {
       verifyIdToken.mockResolvedValue({
         getPayload: () => ({
           sub: 'google-sub-1',
           email: 'user@example.com',
-          name: 'User',
+          email_verified: false,
+        }),
+      });
+      mockDB.select.mockReturnValueOnce(selectChain([]));
+
+      await expect(service.googleAuth(googleDto)).rejects.toThrow(
+        new UnauthorizedException(errors.EMAIL_NOT_VERIFIED),
+      );
+    });
+
+    it('signs in an existing google identity without checking the email', async () => {
+      verifyIdToken.mockResolvedValue({
+        getPayload: () => ({
+          sub: 'google-sub-1',
+          email: 'user@example.com',
+          email_verified: false,
         }),
       });
       mockDB.select
-        .mockReturnValueOnce(selectChain([{ userId: 1 }])) // existingIdentity
-        .mockReturnValueOnce(
-          selectChain([{ id: 1, email: 'user@example.com', tokenVersion: 0 }]),
-        ); // final user fetch
-      jwtService.signAsync.mockResolvedValue('signed-token');
+        .mockReturnValueOnce(selectChain([{ userId: 1 }]))
+        .mockReturnValueOnce(selectChain([{ id: 1, lockedUntil: null }]));
+      mockDB.update.mockReturnValue(updateChain());
 
       const result = await service.googleAuth(googleDto);
 
-      expect(result).toEqual({ accessToken: 'signed-token' });
+      expect(result).toEqual(tokens);
       expect(mockDB.insert).not.toHaveBeenCalled();
       expect(mockDB.transaction).not.toHaveBeenCalled();
+      expect(sessionService.createSession).toHaveBeenCalledWith(1);
     });
 
-    it('links a google identity to an existing local user by email', async () => {
+    it('links a google identity to an existing user found by email', async () => {
       verifyIdToken.mockResolvedValue({
         getPayload: () => ({
           sub: 'google-sub-2',
           email: 'user@example.com',
-          name: 'User',
+          email_verified: true,
         }),
       });
       mockDB.select
-        .mockReturnValueOnce(selectChain([])) // no existingIdentity
-        .mockReturnValueOnce(selectChain([{ id: 2, email: 'user@example.com' }])) // existingUser by email
-        .mockReturnValueOnce(
-          selectChain([{ id: 2, email: 'user@example.com', tokenVersion: 0 }]),
-        ); // final user fetch
-      mockDB.insert.mockReturnValue(insertChainNoReturning());
-      jwtService.signAsync.mockResolvedValue('signed-token');
+        .mockReturnValueOnce(selectChain([]))
+        .mockReturnValueOnce(selectChain([{ id: 2 }]))
+        .mockReturnValueOnce(selectChain([{ id: 2, lockedUntil: null }]));
+      mockDB.insert.mockReturnValue(insertConflictChain());
+      mockDB.update.mockReturnValue(updateChain());
 
       const result = await service.googleAuth(googleDto);
 
-      expect(result).toEqual({ accessToken: 'signed-token' });
+      expect(result).toEqual(tokens);
       expect(mockDB.insert).toHaveBeenCalledTimes(1);
-      expect(mockDB.transaction).not.toHaveBeenCalled();
+      expect(sessionService.createSession).toHaveBeenCalledWith(2);
     });
 
     it('creates a new user when no identity or email match exists', async () => {
@@ -325,37 +385,88 @@ describe('AuthService', () => {
         getPayload: () => ({
           sub: 'google-sub-3',
           email: 'brandnew@example.com',
-          name: 'Brand New',
+          email_verified: true,
         }),
       });
       mockDB.select
-        .mockReturnValueOnce(selectChain([])) // no existingIdentity
-        .mockReturnValueOnce(selectChain([])) // no existingUser by email
-        .mockReturnValueOnce(
-          selectChain([
-            { id: 3, email: 'brandnew@example.com', tokenVersion: 0 },
-          ]),
-        ); // final user fetch
-      const newUser = {
-        id: 3,
-        email: 'brandnew@example.com',
-        tokenVersion: 0,
-      };
+        .mockReturnValueOnce(selectChain([]))
+        .mockReturnValueOnce(selectChain([]))
+        .mockReturnValueOnce(selectChain([{ id: 3, lockedUntil: null }]));
       const tx = {
         insert: vi
           .fn()
-          .mockReturnValueOnce(insertChain([newUser]))
+          .mockReturnValueOnce(insertChain([{ id: 3 }]))
           .mockReturnValueOnce(insertChain([{ id: 1 }])),
       };
       mockDB.transaction.mockImplementation((cb: (tx: unknown) => unknown) =>
         cb(tx),
       );
-      jwtService.signAsync.mockResolvedValue('signed-token');
+      mockDB.update.mockReturnValue(updateChain());
 
       const result = await service.googleAuth(googleDto);
 
-      expect(result).toEqual({ accessToken: 'signed-token' });
+      expect(result).toEqual(tokens);
       expect(mockDB.transaction).toHaveBeenCalledTimes(1);
+      expect(sessionService.createSession).toHaveBeenCalledWith(3);
+    });
+
+    it('reuses the user created by a concurrent request on a unique violation', async () => {
+      verifyIdToken.mockResolvedValue({
+        getPayload: () => ({
+          sub: 'google-sub-4',
+          email: 'racer@example.com',
+          email_verified: true,
+        }),
+      });
+      mockDB.select
+        .mockReturnValueOnce(selectChain([]))
+        .mockReturnValueOnce(selectChain([]))
+        .mockReturnValueOnce(selectChain([{ id: 4 }]))
+        .mockReturnValueOnce(selectChain([{ id: 4, lockedUntil: null }]));
+      mockDB.transaction.mockRejectedValue(uniqueViolation());
+      mockDB.update.mockReturnValue(updateChain());
+
+      const result = await service.googleAuth(googleDto);
+
+      expect(result).toEqual(tokens);
+      expect(sessionService.createSession).toHaveBeenCalledWith(4);
+    });
+
+    it('throws InternalServerErrorException if the resolved user is gone', async () => {
+      verifyIdToken.mockResolvedValue({
+        getPayload: () => ({
+          sub: 'google-sub-5',
+          email: 'user@example.com',
+          email_verified: true,
+        }),
+      });
+      mockDB.select
+        .mockReturnValueOnce(selectChain([{ userId: 5 }]))
+        .mockReturnValueOnce(selectChain([]));
+
+      await expect(service.googleAuth(googleDto)).rejects.toThrow(
+        new InternalServerErrorException(errors.SOMETHING_WENT_WRONG),
+      );
+    });
+
+    it('throws UnauthorizedException if the account is locked', async () => {
+      verifyIdToken.mockResolvedValue({
+        getPayload: () => ({
+          sub: 'google-sub-6',
+          email: 'user@example.com',
+          email_verified: true,
+        }),
+      });
+      mockDB.select
+        .mockReturnValueOnce(selectChain([{ userId: 6 }]))
+        .mockReturnValueOnce(
+          selectChain([{ id: 6, lockedUntil: futureDate() }]),
+        );
+
+      await expect(service.googleAuth(googleDto)).rejects.toThrow(
+        new UnauthorizedException(errors.ACCOUNT_LOCKED),
+      );
+      expect(sessionService.createSession).not.toHaveBeenCalled();
     });
   });
 });

@@ -12,7 +12,7 @@ async function bootstrap() {
     bufferLogs: true,
   });
 
-  app.enableCors();
+  app.enableCors({ origin: process.env.CLIENT_URL ?? 'http://localhost:3000' });
   app.useGlobalPipes(new ValidationPipe({ whitelist: true }));
   app.useLogger(app.get(Logger));
 

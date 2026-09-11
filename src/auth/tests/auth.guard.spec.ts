@@ -1,22 +1,9 @@
-import { UnauthorizedException } from '@nestjs/common';
-import { ExecutionContext } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
+import { ExecutionContext, UnauthorizedException } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { errors } from '../../constants/errors.js';
 import { AuthenticatedRequest, AuthGuard } from '../auth.guard.js';
-
-const mockDB = vi.hoisted(() => ({ select: vi.fn() }));
-
-vi.mock('../../db/index.js', () => ({ default: mockDB }));
-
-function selectChain(result: unknown[]) {
-  return {
-    from: vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue(result),
-    }),
-  };
-}
+import { SessionService } from '../session.service.js';
 
 function createContext(request: Partial<AuthenticatedRequest>) {
   return {
@@ -27,13 +14,13 @@ function createContext(request: Partial<AuthenticatedRequest>) {
 }
 
 describe('AuthGuard', () => {
-  let jwtService: { verifyAsync: ReturnType<typeof vi.fn> };
+  let sessionService: { verifyAccess: ReturnType<typeof vi.fn> };
   let guard: AuthGuard;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    jwtService = { verifyAsync: vi.fn() };
-    guard = new AuthGuard(jwtService as unknown as JwtService);
+    sessionService = { verifyAccess: vi.fn() };
+    guard = new AuthGuard(sessionService as unknown as SessionService);
   });
 
   it('throws UnauthorizedException if the authorization header is missing', async () => {
@@ -42,6 +29,7 @@ describe('AuthGuard', () => {
     await expect(guard.canActivate(context)).rejects.toThrow(
       new UnauthorizedException(errors.MISSING_TOKEN),
     );
+    expect(sessionService.verifyAccess).not.toHaveBeenCalled();
   });
 
   it('throws UnauthorizedException if the header is not a Bearer token', async () => {
@@ -50,10 +38,13 @@ describe('AuthGuard', () => {
     await expect(guard.canActivate(context)).rejects.toThrow(
       new UnauthorizedException(errors.MISSING_TOKEN),
     );
+    expect(sessionService.verifyAccess).not.toHaveBeenCalled();
   });
 
-  it('throws UnauthorizedException if the token fails verification', async () => {
-    jwtService.verifyAsync.mockRejectedValue(new Error('bad signature'));
+  it('propagates the rejection if the session is not valid', async () => {
+    sessionService.verifyAccess.mockRejectedValue(
+      new UnauthorizedException(errors.INVALID_TOKEN),
+    );
     const context = createContext({
       headers: { authorization: 'Bearer invalid' },
     });
@@ -63,45 +54,8 @@ describe('AuthGuard', () => {
     );
   });
 
-  it('throws UnauthorizedException if the user no longer exists', async () => {
-    jwtService.verifyAsync.mockResolvedValue({
-      id: 1,
-      email: 'a@a.com',
-      tokenVersion: 0,
-    });
-    mockDB.select.mockReturnValue(selectChain([]));
-    const context = createContext({
-      headers: { authorization: 'Bearer valid' },
-    });
-
-    await expect(guard.canActivate(context)).rejects.toThrow(
-      new UnauthorizedException(errors.INVALID_TOKEN),
-    );
-  });
-
-  it('throws UnauthorizedException if tokenVersion does not match', async () => {
-    jwtService.verifyAsync.mockResolvedValue({
-      id: 1,
-      email: 'a@a.com',
-      tokenVersion: 0,
-    });
-    mockDB.select.mockReturnValue(selectChain([{ tokenVersion: 1 }]));
-    const context = createContext({
-      headers: { authorization: 'Bearer valid' },
-    });
-
-    await expect(guard.canActivate(context)).rejects.toThrow(
-      new UnauthorizedException(errors.INVALID_TOKEN),
-    );
-  });
-
-  it('attaches the user to the request and allows access', async () => {
-    jwtService.verifyAsync.mockResolvedValue({
-      id: 1,
-      email: 'a@a.com',
-      tokenVersion: 0,
-    });
-    mockDB.select.mockReturnValue(selectChain([{ tokenVersion: 0 }]));
+  it('attaches the user and the session to the request and allows access', async () => {
+    sessionService.verifyAccess.mockResolvedValue({ userId: 1, sessionId: 10 });
     const request: Partial<AuthenticatedRequest> = {
       headers: { authorization: 'Bearer valid' },
     };
@@ -110,6 +64,7 @@ describe('AuthGuard', () => {
     const result = await guard.canActivate(context);
 
     expect(result).toBe(true);
-    expect(request.user).toEqual({ id: 1, email: 'a@a.com' });
+    expect(request.user).toEqual({ id: 1, sessionId: 10 });
+    expect(sessionService.verifyAccess).toHaveBeenCalledWith('valid');
   });
 });
