@@ -13,7 +13,6 @@ export const usersTable = pgTable('users', {
   createdAt: timestamp('created_at', { mode: 'string' }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { mode: 'string' }).notNull().defaultNow(),
   deletionDate: timestamp('deletion_date', { mode: 'string' }),
-  tokenVersion: integer('token_version').notNull().default(0),
   failedLoginAttempts: integer('failed_login_attempts').notNull().default(0),
   lockedUntil: timestamp('locked_until', { mode: 'string' }),
 });

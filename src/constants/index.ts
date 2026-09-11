@@ -7,6 +7,10 @@ export const globalThrottler = {
   TTL: 60_000,
 };
 
+export const ACCESS_TOKEN_EXPIRES_IN_MS = 900_000;
+
+export const REFRESH_TOKEN_EXPIRES_IN_MS = 2_592_000_000;
+
 export const authThrottler = {
   LIMIT: 5,
   TTL: 60_000,

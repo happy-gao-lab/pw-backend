@@ -4,10 +4,9 @@ import {
   InternalServerErrorException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
 import { compare, hash } from 'bcrypt';
 import { and, eq, sql } from 'drizzle-orm';
-import { OAuth2Client } from 'google-auth-library';
+import { LoginTicket, OAuth2Client } from 'google-auth-library';
 import { Logger } from 'nestjs-pino';
 
 import { errors } from '../constants/errors.js';
@@ -16,27 +15,32 @@ import DB from '../db/index.js';
 import { authIdentitiesTable } from '../db/schemas/auth.schemas.js';
 import { UsersTable, usersTable } from '../db/schemas/user.schemas.js';
 import {
-  AccessTokenData,
   GoogleSignInDto,
+  RefreshTokenDto,
   SignInDto,
   SignUpDto,
 } from './dto.js';
+import { SessionService } from './session.service.js';
 
 @Injectable()
 export class AuthService {
   private googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
   constructor(
-    private readonly jwtService: JwtService,
+    private readonly sessionService: SessionService,
     private readonly logger: Logger,
   ) {}
 
-  private signAccessToken(data: AccessTokenData) {
-    return this.jwtService.signAsync({
-      id: data.id,
-      email: data.email,
-      tokenVersion: data.tokenVersion,
-    });
+  // Detects a Postgres unique constraint violation (SQLSTATE 23505).
+  // Two concurrent sign-ups can both pass the email existence check,
+  // so the second insert is rejected by the unique index instead.
+  private isUniqueViolation(error: unknown): boolean {
+    return (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      (error as { code?: string }).code === '23505'
+    );
   }
 
   private async registerFailedAttempt(user: UsersTable): Promise<void> {
@@ -53,6 +57,15 @@ export class AuthService {
       })
       .where(eq(usersTable.id, user.id))
       .returning({ failedLoginAttempts: usersTable.failedLoginAttempts });
+
+    if (!updated) {
+      this.logger.error(
+        { userId: user.id },
+        'Failed login attempt update returned no row',
+      );
+
+      return;
+    }
 
     this.logger.warn(
       { userId: user.id, attempts: updated.failedLoginAttempts },
@@ -75,7 +88,7 @@ export class AuthService {
       ? await hash(data.password, BCRYPT_SALT_ROUNDS)
       : null;
 
-    // allows to avoid an orphan user if auth identity isn't created
+    // transaction allows to avoid an orphan user if auth identity isn't created
     const user = await DB.transaction(async (tx) => {
       const [newUser] = await tx
         .insert(usersTable)
@@ -106,6 +119,57 @@ export class AuthService {
     return user;
   }
 
+  private async connectGoogleAccount(
+    email: string,
+    sub: string,
+    username: string,
+  ): Promise<number> {
+    const [existingUser] = await DB.select()
+      .from(usersTable)
+      .where(eq(usersTable.email, email));
+
+    if (existingUser) {
+      await DB.insert(authIdentitiesTable)
+        .values({
+          userId: existingUser.id,
+          provider: 'google',
+          providerUserId: sub,
+        })
+        .onConflictDoNothing();
+
+      return existingUser.id;
+    }
+
+    try {
+      const newUser = await this.registerUser(
+        { username, email },
+        'google',
+        sub,
+      );
+
+      return newUser.id;
+    } catch (error) {
+      if (!this.isUniqueViolation(error)) {
+        throw error;
+      }
+
+      // a concurrent request has already registered this account
+      const [registeredUser] = await DB.select()
+        .from(usersTable)
+        .where(eq(usersTable.email, email));
+
+      if (!registeredUser) {
+        this.logger.error(
+          { email },
+          'Google account registration conflicted, but no user was found',
+        );
+        throw new InternalServerErrorException(errors.SOMETHING_WENT_WRONG);
+      }
+
+      return registeredUser.id;
+    }
+  }
+
   async localSignUp(dto: SignUpDto) {
     const [existingUser] = await DB.select()
       .from(usersTable)
@@ -119,15 +183,21 @@ export class AuthService {
       throw new ConflictException(errors.EMAIL_IN_USE);
     }
 
-    const newUser = await this.registerUser(dto, 'local');
+    let newUser: UsersTable;
 
-    const accessToken = await this.signAccessToken({
-      id: newUser.id,
-      email: newUser.email,
-      tokenVersion: newUser.tokenVersion,
-    });
+    try {
+      newUser = await this.registerUser(dto, 'local');
+    } catch (error) {
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException(errors.EMAIL_IN_USE);
+      }
 
-    return { accessToken };
+      throw error;
+    }
+
+    const tokens = await this.sessionService.createSession(newUser.id);
+
+    return tokens;
   }
 
   async localSignIn(dto: SignInDto) {
@@ -145,6 +215,11 @@ export class AuthService {
 
     if (user.lockedUntil && new Date(user.lockedUntil) > new Date()) {
       throw new UnauthorizedException(errors.ACCOUNT_LOCKED);
+    }
+
+    // the lock has expired, so the attempts budget starts over
+    if (user.lockedUntil) {
+      await this.resetFailedAttempts(user.id);
     }
 
     const [userAuthIdentity] = await DB.select()
@@ -176,26 +251,26 @@ export class AuthService {
 
     await this.resetFailedAttempts(user.id);
 
-    const accessToken = await this.signAccessToken({
-      id: user.id,
-      email: user.email,
-      tokenVersion: user.tokenVersion,
-    });
+    const tokens = await this.sessionService.createSession(user.id);
 
-    return { accessToken };
+    return tokens;
   }
 
-  async logout(userId: number): Promise<void> {
-    await DB.update(usersTable)
-      .set({ tokenVersion: sql`${usersTable.tokenVersion} + 1` })
-      .where(eq(usersTable.id, userId));
+  async logout(sessionId: number): Promise<void> {
+    await this.sessionService.revokeSession(sessionId);
   }
 
   async googleAuth(dto: GoogleSignInDto) {
-    const ticket = await this.googleClient.verifyIdToken({
-      idToken: dto.idToken,
-      audience: process.env.GOOGLE_CLIENT_ID,
-    });
+    let ticket: LoginTicket;
+
+    try {
+      ticket = await this.googleClient.verifyIdToken({
+        idToken: dto.idToken,
+        audience: process.env.GOOGLE_CLIENT_ID,
+      });
+    } catch {
+      throw new UnauthorizedException(errors.INVALID_TOKEN);
+    }
 
     const payload = ticket.getPayload();
 
@@ -221,39 +296,40 @@ export class AuthService {
     if (existingIdentity) {
       userId = existingIdentity.userId;
     } else {
-      const [existingUser] = await DB.select()
-        .from(usersTable)
-        .where(eq(usersTable.email, email));
-
-      if (existingUser) {
-        await DB.insert(authIdentitiesTable).values({
-          userId: existingUser.id,
-          provider: 'google',
-          providerUserId: sub,
-        });
-
-        userId = existingUser.id;
-      } else {
-        const newUser = await this.registerUser(
-          { username, email },
-          'google',
-          sub,
-        );
-
-        userId = newUser.id;
+      // email identifies the account here, so it has to be verified by Google
+      if (!payload.email_verified) {
+        throw new UnauthorizedException(errors.EMAIL_NOT_VERIFIED);
       }
+
+      userId = await this.connectGoogleAccount(email, sub, username);
     }
 
     const [user] = await DB.select()
       .from(usersTable)
       .where(eq(usersTable.id, userId));
 
-    const accessToken = await this.signAccessToken({
-      id: user.id,
-      email: user.email,
-      tokenVersion: user.tokenVersion,
-    });
+    if (!user) {
+      this.logger.error(
+        { userId },
+        'User not found after google auth resolution',
+      );
+      throw new InternalServerErrorException(errors.SOMETHING_WENT_WRONG);
+    }
 
-    return { accessToken };
+    if (user.lockedUntil && new Date(user.lockedUntil) > new Date()) {
+      throw new UnauthorizedException(errors.ACCOUNT_LOCKED);
+    }
+
+    await this.resetFailedAttempts(user.id);
+
+    const tokens = await this.sessionService.createSession(user.id);
+
+    return tokens;
+  }
+
+  async refresh(dto: RefreshTokenDto) {
+    const tokens = await this.sessionService.refreshSession(dto.refreshToken);
+
+    return tokens;
   }
 }

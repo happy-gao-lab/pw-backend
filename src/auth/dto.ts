@@ -28,8 +28,20 @@ export class GoogleSignInDto {
   idToken: string;
 }
 
-export class AccessTokenData {
-  id: number;
-  email: string;
-  tokenVersion: number;
+export class RefreshTokenDto {
+  @IsString()
+  refreshToken: string;
+}
+
+export type TokenType = 'access' | 'refresh';
+
+export class AccessTokenPayload {
+  sessionId: number;
+  type: TokenType;
+}
+
+export class RefreshTokenPayload {
+  sessionId: number;
+  tokenId: string;
+  type: TokenType;
 }
